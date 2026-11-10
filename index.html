@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>مسیر من — My Path</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" />
+<link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="app">
+  <!-- ============ سایدبار ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-icon">🌱</span>
+      <span class="brand-name">مسیر من</span>
+    </div>
+    <nav class="nav">
+      <button class="nav-item active" data-page="dashboard"><span class="ni">🏠</span><span>داشبورد</span></button>
+      <button class="nav-item" data-page="tasks"><span class="ni">✅</span><span>عادت‌ها</span></button>
+      <button class="nav-item" data-page="journal"><span class="ni">📔</span><span>ژورنال</span></button>
+      <button class="nav-item" data-page="advice"><span class="ni">💡</span><span>توصیه‌ها</span></button>
+      <button class="nav-item" data-page="brainstorm"><span class="ni">🧠</span><span>برین‌استورم</span></button>
+      <button class="nav-item" data-page="gym"><span class="ni">💪</span><span>باشگاه</span></button>
+      <button class="nav-item" data-page="plan"><span class="ni">🏋️</span><span>برنامه ورزشی</span></button>
+      <button class="nav-item" data-page="stats"><span class="ni">📊</span><span>آمار</span></button>
+      <button class="nav-item" data-page="settings"><span class="ni">⚙️</span><span>تنظیمات</span></button>
+    </nav>
+  </aside>
+
+  <!-- ============ محتوای اصلی ============ -->
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-date" id="topbarDate"></div>
+      <div class="topbar-user" id="topbarUser"></div>
+      <button class="icon-btn" id="themeToggle" title="تغییر تم">🌙</button>
+    </header>
+
+    <!-- ---------- داشبورد ---------- -->
+    <section class="page active" id="page-dashboard">
+      <div class="hero card">
+        <div>
+          <h1 id="greeting">سلام 🌱</h1>
+          <p class="quote" id="quote"></p>
+        </div>
+        <button class="btn primary" id="startDayBtn">🚀 شروع روز من</button>
+      </div>
+
+      <div class="grid-3">
+        <div class="stat-card card">
+          <div class="stat-label">پیشرفت امروز</div>
+          <div class="stat-value" id="statToday">0%</div>
+        </div>
+        <div class="stat-card card">
+          <div class="stat-label">بهترین عادت</div>
+          <div class="stat-value small" id="statBest">—</div>
+        </div>
+        <div class="stat-card card">
+          <div class="stat-label">روزهای فعال پشت‌سرهم</div>
+          <div class="stat-value" id="statStreak">0</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>عادت‌های امروز</h3>
+          <span class="muted" id="todayLabel"></span>
+        </div>
+        <div class="progress"><div class="progress-bar" id="dashProgress"></div></div>
+        <div id="dashPending" class="pending-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>آخرین ژورنال</h3></div>
+        <div id="lastJournal" class="last-journal"></div>
+      </div>
+    </section>
+
+    <!-- ---------- عادت‌ها ---------- -->
+    <section class="page" id="page-tasks">
+      <div class="page-head">
+        <h2>عادت‌های روزانه</h2>
+        <button class="btn primary" id="addHabitBtn">➕ عادت جدید</button>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3 id="tasksDate"></h3>
+          <span class="muted" id="tasksProgressText"></span>
+        </div>
+        <div class="progress"><div class="progress-bar" id="tasksProgress"></div></div>
+        <div id="habitList" class="habit-list"></div>
+      </div>
+    </section>
+
+    <!-- ---------- ژورنال ---------- -->
+    <section class="page" id="page-journal">
+      <div class="page-head">
+        <h2>ژورنال</h2>
+        <button class="btn" id="newJournalBtn">➕ ورودی جدید</button>
+      </div>
+
+      <div class="card editor" id="journalEditor" hidden>
+        <div class="editor-row">
+          <input id="jTitle" placeholder="عنوان ورودی" />
+          <input id="jDate" type="date" />
+        </div>
+        <div class="muted small" id="jDateHint"></div>
+
+        <div class="editor-row">
+          <div class="mood-picker" id="moodPicker">
+            <button data-mood="1" title="خیلی بد">😞</button>
+            <button data-mood="2" title="بد">😐</button>
+            <button data-mood="3" title="معمولی">🙂</button>
+            <button data-mood="4" title="خوب">😄</button>
+            <button data-mood="5" title="عالی">🤩</button>
+          </div>
+          <input id="jTags" placeholder="تگ‌ها (با کاما: سلامتی, کار)" />
+        </div>
+        <input type="hidden" id="jMood" value="3" />
+
+        <label for="jGood">چه کار خوبی کردم؟</label>
+        <textarea id="jGood" rows="2"></textarea>
+
+        <label for="jLearned">چه چیزی یاد گرفتم؟</label>
+        <textarea id="jLearned" rows="2"></textarea>
+
+        <label for="jFeeling">چه احساسی دارم؟</label>
+        <textarea id="jFeeling" rows="2"></textarea>
+
+        <label for="jTomorrow">برنامه فردا</label>
+        <textarea id="jTomorrow" rows="2"></textarea>
+
+        <div class="editor-actions">
+          <span class="autosave-indicator" id="autosaveInd"></span>
+          <button class="btn" id="cancelJournalBtn">انصراف</button>
+          <button class="btn primary" id="saveJournalBtn">ذخیره</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="journal-filters">
+          <input id="jSearch" placeholder="🔍 جستجو..." />
+          <select id="jMoodFilter">
+            <option value="">همه حالت‌ها</option>
+            <option value="1">😞 خیلی بد</option>
+            <option value="2">😐 بد</option>
+            <option value="3">🙂 معمولی</option>
+            <option value="4">😄 خوب</option>
+            <option value="5">🤩 عالی</option>
+          </select>
+          <select id="jTagFilter"><option value="">همه تگ‌ها</option></select>
+          <button class="btn small" id="exportJournalBtn">⬇️ دانلود</button>
+        </div>
+        <div id="journalList" class="journal-list"></div>
+      </div>
+    </section>
+
+    <!-- ---------- تاپ توصیه‌ها ---------- -->
+    <section class="page" id="page-advice">
+      <div class="page-head">
+        <h2>تاپ توصیه‌ها</h2>
+        <button class="btn primary" id="addAdviceBtn">➕ توصیه جدید</button>
+      </div>
+
+      <div class="card">
+        <div class="journal-filters">
+          <input id="adviceSearch" placeholder="🔍 جستجو در توصیه‌ها..." />
+          <select id="adviceSort">
+            <option value="pinned">پین‌شده‌ها اول</option>
+            <option value="newest">جدیدترین</option>
+            <option value="oldest">قدیمی‌ترین</option>
+          </select>
+        </div>
+        <div class="advice-grid" id="adviceGrid"></div>
+      </div>
+    </section>
+
+    <!-- ---------- برین‌استورم ---------- -->
+    <section class="page" id="page-brainstorm">
+      <!-- لیست موضوع‌ها -->
+      <div id="brainstormListView">
+        <div class="page-head">
+          <h2>برین‌استورم</h2>
+          <button class="btn primary" id="addTopicBtn">➕ موضوع جدید</button>
+        </div>
+        <div class="card">
+          <input id="topicSearch" placeholder="🔍 جستجو در موضوع‌ها..." />
+          <div class="topic-grid" id="topicGrid"></div>
+        </div>
+      </div>
+
+      <!-- ادیتور یک موضوع -->
+      <div id="brainstormEditorView" hidden>
+        <div class="page-head">
+          <button class="btn" id="backToTopicsBtn">← بازگشت</button>
+          <div class="topic-editor-title">
+            <span id="editorTopicIcon">🧠</span>
+            <span id="editorTopicTitle"></span>
+          </div>
+        </div>
+        <div class="card brainstorm-editor">
+          <textarea id="brainstormContent" class="brainstorm-textarea"
+                    placeholder="اینجا آزاد بنویس... هرچی توی ذهنته. برای خودت، برای حل مشکل، برای فکر کردن."></textarea>
+          <div class="editor-actions">
+            <span class="muted small" id="brainstormWordCount">۰ کلمه</span>
+            <span class="autosave-indicator" id="brainstormSaveInd"></span>
+            <button class="btn" id="downloadTopicBtn">⬇️ دانلود TXT</button>
+            <button class="btn primary" id="saveBrainstormBtn">ذخیره</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- باشگاه ---------- -->
+    <section class="page" id="page-gym">
+      <div class="page-head">
+        <h2>باشگاه</h2>
+        <button class="btn primary" id="addGymBtn">➕ جلسه جدید</button>
+      </div>
+
+      <div class="grid-3">
+        <div class="stat-card card">
+          <div class="stat-label">جلسات این هفته</div>
+          <div class="stat-value" id="gymWeekSessions">0</div>
+        </div>
+        <div class="stat-card card">
+          <div class="stat-label">میانگین کیفیت</div>
+          <div class="stat-value" id="gymAvgQuality">—</div>
+        </div>
+        <div class="stat-card card">
+          <div class="stat-label">مجموع وزنه این هفته (kg)</div>
+          <div class="stat-value" id="gymWeekWeight">0</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>جلسات ثبت‌شده</h3></div>
+        <div id="gymList" class="gym-list"></div>
+      </div>
+    </section>
+
+    <!-- ---------- برنامه ورزشی ---------- -->
+    <section class="page" id="page-plan">
+      <div class="page-head"><h2>برنامه ورزشی</h2></div>
+
+      <div class="plan-tabs">
+        <button class="plan-tab active" data-tab="plan">برنامه من</button>
+        <button class="plan-tab" data-tab="review">بررسی عملکرد</button>
+      </div>
+
+      <!-- تب برنامه من -->
+      <div id="planTab" class="plan-tab-content active">
+        <div class="card">
+          <label>چند جلسه در هفته می‌خوای بری؟</label>
+          <div class="sessions-per-week" id="sessionsPerWeek">
+            <button data-n="1">۱</button><button data-n="2">۲</button>
+            <button data-n="3">۳</button><button data-n="4">۴</button>
+            <button data-n="5">۵</button><button data-n="6">۶</button>
+            <button data-n="7">۷</button>
+          </div>
+        </div>
+        <div class="plan-days" id="planDays"></div>
+      </div>
+
+      <!-- تب بررسی عملکرد -->
+      <div id="reviewTab" class="plan-tab-content">
+        <div id="reviewContent"></div>
+      </div>
+    </section>
+
+    <!-- ---------- آمار ---------- -->
+    <section class="page" id="page-stats">
+      <div class="page-head"><h2>آمار و عملکرد</h2></div>
+
+      <div class="grid-3">
+        <div class="stat-card card"><div class="stat-label">روزهای فعال</div><div class="stat-value" id="stActiveDays">0</div></div>
+        <div class="stat-card card"><div class="stat-label">نرخ موفقیت کل</div><div class="stat-value" id="stSuccess">0%</div></div>
+        <div class="stat-card card"><div class="stat-label">بهترین زنجیره</div><div class="stat-value" id="stBestStreak">0</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>درصد تکمیل ۷ روز اخیر</h3></div>
+        <div class="bar-chart" id="barChart"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>حالت روحی در طول زمان</h3></div>
+        <div id="moodChart" class="mood-chart"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>نقشه فعالیت</h3></div>
+        <div class="heatmap" id="heatmap"></div>
+        <div class="heat-legend">کم <span class="hm-cell lvl-0"></span><span class="hm-cell lvl-1"></span><span class="hm-cell lvl-2"></span><span class="hm-cell lvl-3"></span><span class="hm-cell lvl-4"></span> زیاد</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>یادداشت عملکرد هفتگی</h3></div>
+        <textarea id="weeklyNote" rows="4" placeholder="این هفته چطور بود؟ چی خوب پیش رفت، چی نه..."></textarea>
+        <div class="muted small" id="weeklySaved"></div>
+      </div>
+    </section>
+
+    <!-- ---------- تنظیمات ---------- -->
+    <section class="page" id="page-settings">
+      <div class="page-head"><h2>تنظیمات</h2></div>
+
+      <div class="card">
+        <label for="setName">اسم تو</label>
+        <input id="setName" placeholder="مثلاً علی" />
+
+        <label>پالت رنگی</label>
+        <div class="palette-row" id="paletteRow">
+          <button data-palette="green" class="palette p-green" title="سبز"></button>
+          <button data-palette="blue" class="palette p-blue" title="آبی"></button>
+          <button data-palette="purple" class="palette p-purple" title="بنفش"></button>
+        </div>
+
+        <label for="setReminder">ساعت یادآوری روزانه (نمایشی)</label>
+        <input id="setReminder" type="time" />
+      </div>
+
+      <div class="card">
+        <h3>مدیریت داده‌ها</h3>
+        <div class="row-wrap">
+          <button class="btn" id="exportAllBtn">⬇️ خروجی JSON</button>
+          <label class="btn" for="importFile">⬆️ ورود JSON</label>
+          <input type="file" id="importFile" accept="application/json" hidden />
+          <button class="btn danger" id="clearAllBtn">🗑️ پاک کردن همه داده‌ها</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ============ مودال عادت ============ -->
+<div class="modal-backdrop" id="habitModal">
+  <div class="modal">
+    <h3 id="habitModalTitle">عادت جدید</h3>
+
+    <label for="hTitle">عنوان</label>
+    <input id="hTitle" placeholder="مثلاً پیاده‌روی" />
+
+    <label for="hIcon">آیکون (اموجی)</label>
+    <input id="hIcon" value="⭐" maxlength="4" />
+    <div class="emoji-row" id="emojiRow">
+      <button>🏋️</button><button>📖</button><button>💧</button><button>🚭</button>
+      <button>🌿</button><button>🧘</button><button>🥗</button><button>😴</button>
+      <button>✍️</button><button>🎯</button>
+    </div>
+
+    <label for="hColor">رنگ</label>
+    <input id="hColor" type="color" value="#10b981" />
+
+    <label>تکرار در روزهای هفته <span class="muted small">(اگر هیچ روزی انتخاب نشه = هر روز)</span></label>
+    <div class="days-picker" id="habitDays">
+      <button data-day="0">شنبه</button>
+      <button data-day="1">یکشنبه</button>
+      <button data-day="2">دوشنبه</button>
+      <button data-day="3">سه‌شنبه</button>
+      <button data-day="4">چهارشنبه</button>
+      <button data-day="5">پنجشنبه</button>
+      <button data-day="6">جمعه</button>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn" id="habitCancelBtn">انصراف</button>
+      <button class="btn primary" id="habitSaveBtn">ذخیره</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ مودال توصیه ============ -->
+<div class="modal-backdrop" id="adviceModal">
+  <div class="modal">
+    <h3 id="adviceModalTitle">توصیه جدید</h3>
+    <label for="adviceText">متن توصیه</label>
+    <textarea id="adviceText" rows="4" placeholder="یه توصیه که به ذهنت رسیده..."></textarea>
+    <label>رنگ</label>
+    <div class="color-row" id="adviceColorRow">
+      <button data-color="#fef3c7" style="background:#fef3c7"></button>
+      <button data-color="#dbeafe" style="background:#dbeafe"></button>
+      <button data-color="#dcfce7" style="background:#dcfce7"></button>
+      <button data-color="#fce7f3" style="background:#fce7f3"></button>
+      <button data-color="#ede9fe" style="background:#ede9fe"></button>
+      <button data-color="#ffe4e6" style="background:#ffe4e6"></button>
+      <button data-color="#fef9c3" style="background:#fef9c3"></button>
+      <button data-color="#ccfbf1" style="background:#ccfbf1"></button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="adviceCancelBtn">انصراف</button>
+      <button class="btn primary" id="adviceSaveBtn">ذخیره</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ مودال موضوع برین‌استورم ============ -->
+<div class="modal-backdrop" id="topicModal">
+  <div class="modal">
+    <h3 id="topicModalTitle">موضوع جدید</h3>
+    <label for="topicTitle">اسم موضوع</label>
+    <input id="topicTitle" placeholder="مثلاً: مشکل کار / ایده جدید / سوال ذهنم" />
+
+    <label for="topicIcon">آیکون</label>
+    <input id="topicIcon" value="🧠" maxlength="4" />
+    <div class="emoji-row" id="topicEmojiRow">
+      <button>🧠</button><button>💭</button><button>❓</button><button>🎯</button>
+      <button>💡</button><button>🔥</button><button>🌊</button><button>🌱</button>
+    </div>
+
+    <label>رنگ</label>
+    <div class="color-row" id="topicColorRow">
+      <button data-color="#fef3c7" style="background:#fef3c7"></button>
+      <button data-color="#dbeafe" style="background:#dbeafe"></button>
+      <button data-color="#dcfce7" style="background:#dcfce7"></button>
+      <button data-color="#fce7f3" style="background:#fce7f3"></button>
+      <button data-color="#ede9fe" style="background:#ede9fe"></button>
+      <button data-color="#ffe4e6" style="background:#ffe4e6"></button>
+      <button data-color="#fef9c3" style="background:#fef9c3"></button>
+      <button data-color="#ccfbf1" style="background:#ccfbf1"></button>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn" id="topicCancelBtn">انصراف</button>
+      <button class="btn primary" id="topicSaveBtn">ذخیره</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ مودال جلسه باشگاه ============ -->
+<div class="modal-backdrop" id="gymModal">
+  <div class="modal wide">
+    <h3 id="gymModalTitle">جلسه جدید</h3>
+
+    <div class="editor-row">
+      <input id="gymName" placeholder="نام جلسه (مثلاً سینه و پشت)" />
+      <input id="gymDate" type="date" />
+    </div>
+
+    <div class="editor-row">
+      <div style="flex:1">
+        <label for="gymDuration">مدت (دقیقه)</label>
+        <input id="gymDuration" type="number" min="0" value="60" />
+      </div>
+    </div>
+
+    <label>کیفیت جلسه</label>
+    <div class="star-picker" id="gymQuality">
+      <button data-v="1">⭐</button><button data-v="2">⭐</button>
+      <button data-v="3">⭐</button><button data-v="4">⭐</button><button data-v="5">⭐</button>
+    </div>
+    <input type="hidden" id="gymQualityValue" value="3" />
+
+    <label>حس و حال / انرژی</label>
+    <div class="mood-picker" id="gymEnergy">
+      <button data-mood="1">😞</button><button data-mood="2">😐</button>
+      <button data-mood="3">🙂</button><button data-mood="4">😄</button><button data-mood="5">🤩</button>
+    </div>
+    <input type="hidden" id="gymEnergyValue" value="3" />
+
+    <label>حرکات</label>
+    <div id="gymExercises"></div>
+    <button class="btn small" id="addGymExerciseBtn">➕ افزودن حرکت</button>
+
+    <label for="gymNote">یادداشت جلسه</label>
+    <textarea id="gymNote" rows="2"></textarea>
+
+    <div class="modal-actions">
+      <button class="btn" id="gymCancelBtn">انصراف</button>
+      <button class="btn primary" id="gymSaveBtn">ذخیره</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ مودال افزودن حرکت به برنامه ============ -->
+<div class="modal-backdrop" id="planExerciseModal">
+  <div class="modal">
+    <h3>افزودن حرکت به برنامه</h3>
+    <label for="peName">نام حرکت</label>
+    <input id="peName" placeholder="مثلاً پرس سینه" />
+
+    <label for="peMuscle">عضله هدف</label>
+    <select id="peMuscle">
+      <option>سینه</option><option>پشت</option><option>پا</option>
+      <option>سرشانه</option><option>بازو</option><option>شکم</option>
+      <option>ساعد</option><option>ساق</option><option>فول‌بادی</option>
+    </select>
+
+    <div class="editor-row">
+      <div style="flex:1">
+        <label for="peSets">ست</label>
+        <input id="peSets" type="number" min="1" value="3" />
+      </div>
+      <div style="flex:1">
+        <label for="peReps">تکرار</label>
+        <input id="peReps" type="number" min="1" value="10" />
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn" id="peCancelBtn">انصراف</button>
+      <button class="btn primary" id="peSaveBtn">ذخیره</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
