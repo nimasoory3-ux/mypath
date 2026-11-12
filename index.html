@@ -10,7 +10,54 @@
 </head>
 <body>
 
-<div class="app">
+<!-- ============================================================
+     صفحه ورود (Magic Link)
+     تا وقتی کاربر وارد نشده، اپ اصلی مخفی است.
+     با ورود موفق، app.js این صفحه را hid می‌کند و #app را نشان می‌دهد.
+     ============================================================ -->
+<div class="auth-screen" id="authScreen">
+  <div class="auth-card">
+    <div class="auth-brand"><span class="auth-logo">🌱</span><span>مسیر من</span></div>
+
+    <h1 class="auth-title">ورود به حساب</h1>
+    <p class="auth-sub">
+      ایمیلت رو بنویس؛ یک لینک ورود (بدون رمز عبور) برات ایمیل می‌شه.
+      با همین حساب روی لپ‌تاپ و گوشی وارد شو تا داده‌ها خودکار سینک بشن.
+    </p>
+
+    <form id="authForm" novalidate>
+      <label for="authEmail">ایمیل</label>
+      <input id="authEmail" type="email" dir="ltr" placeholder="you@example.com"
+             autocomplete="email" inputmode="email" required />
+      <button class="btn primary auth-submit" id="authSubmitBtn" type="submit">
+        📧 ارسال لینک ورود
+      </button>
+    </form>
+
+    <div class="auth-msg" id="authMsg" role="status"></div>
+
+    <!-- ورود با کد ۶ رقمی: زمانی به کار می‌آید که لینک ایمیل
+         در مرورگر دیگری باز شود. (نیاز به قرار دادن {{ .Token }} در
+         قالب ایمیل Supabase دارد — در SETUP-fa.md توضیح داده شده) -->
+    <details class="auth-code">
+      <summary>کد ۶ رقمی از ایمیل داری؟</summary>
+      <div class="auth-code-row">
+        <input id="authCode" inputmode="numeric" maxlength="6" dir="ltr"
+               placeholder="123456" autocomplete="one-time-code" />
+        <button class="btn" id="authVerifyBtn" type="button">ورود</button>
+      </div>
+      <p class="muted small">اگر لینک ایمیل در مرورگر دیگری باز شد، کد داخل ایمیل را همین‌جا وارد کن.</p>
+    </details>
+
+    <button class="btn auth-retry" id="authRetryBtn" type="button" hidden>🔄 تلاش دوباره</button>
+
+    <p class="auth-foot muted small">
+      🔒 داده‌ها روی Supabase ذخیره می‌شن و با Row Level Security فقط برای خودت قابل دیدن‌اند.
+    </p>
+  </div>
+</div>
+
+<div class="app" id="app" hidden>
   <!-- ============ سایدبار ============ -->
   <aside class="sidebar">
     <div class="brand">
@@ -35,6 +82,7 @@
     <header class="topbar">
       <div class="topbar-date" id="topbarDate"></div>
       <div class="topbar-user" id="topbarUser"></div>
+      <span class="sync-status" id="syncStatus" title="وضعیت ذخیره‌سازی در ابر"></span>
       <button class="icon-btn" id="themeToggle" title="تغییر تم">🌙</button>
     </header>
 
@@ -308,6 +356,34 @@
     <section class="page" id="page-settings">
       <div class="page-head"><h2>تنظیمات</h2></div>
 
+      <!-- کارت حساب کاربری (جدید) -->
+      <div class="card" id="accountCard">
+        <div class="card-head"><h3>☁️ حساب کاربری</h3></div>
+        <div class="account-row">
+          <div>
+            <div class="muted small">وارد شده با ایمیل</div>
+            <div id="accountEmail" class="account-email">—</div>
+          </div>
+          <button class="btn" id="logoutBtn">خروج از حساب</button>
+        </div>
+        <div class="account-sync muted small">
+          تغییرات به‌صورت خودکار در ابر ذخیره می‌شوند و روی دستگاه‌های دیگر (لپ‌تاپ / گوشی) هم دیده می‌شوند.
+        </div>
+      </div>
+
+      <!-- کارت انتقال داده‌های قدیمی (جدید) -->
+      <div class="card">
+        <div class="card-head"><h3>↗️ انتقال داده‌های قبلی (LocalStorage)</h3></div>
+        <p class="muted small">
+          اگر قبلاً از نسخه‌ی محلی استفاده می‌کردی، با این دکمه عادت‌ها و ژورنال قدیمی به حساب ابری منتقل می‌شوند.
+          این کار فقط داده اضافه می‌کند و هیچ‌چیز را پاک نمی‌کند؛ نسخه‌ی محلی هم دست‌نخورده می‌ماند.
+        </p>
+        <div class="row-wrap">
+          <button class="btn primary" id="migrateBtn">⬆️ انتقال داده‌های محلی به ابر</button>
+        </div>
+        <div class="muted small" id="migrateStatus"></div>
+      </div>
+
       <div class="card">
         <label for="setName">اسم تو</label>
         <input id="setName" placeholder="مثلاً علی" />
@@ -331,6 +407,9 @@
           <input type="file" id="importFile" accept="application/json" hidden />
           <button class="btn danger" id="clearAllBtn">🗑️ پاک کردن همه داده‌ها</button>
         </div>
+        <p class="muted small" style="margin-top:10px">
+          ورود JSON داده‌های ابری حساب را با فایل جایگزین می‌کند؛ خروجی JSON همیشه پیشنهاد می‌شود.
+        </p>
       </div>
     </section>
   </main>
@@ -507,6 +586,9 @@
   </div>
 </div>
 
+<!-- ============ اسکریپت‌ها ============ -->
+<!-- کتابخانه Supabase (نسخه ۲) از CDN؛ نیازی به npm/build نیست -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -1,9 +1,68 @@
 /* ============================================================
    مسیر من — My Path
-   اپلیکیشن مدیریت عادت، ژورنال، توصیه‌ها، برین‌استورم، باشگاه
-   Vanilla JS + LocalStorage — بدون هیچ وابستگی خارجی
+   نسخه ۲: ابری (Supabase) — Vanilla JS، بدون هیچ فریم‌ورکی
+   ------------------------------------------------------------
+   تفاوت اصلی با نسخه قبلی:
+     • داده‌ها دیگر در LocalStorage ذخیره نمی‌شوند، بلکه در Supabase
+     • ورود با «لینک جادویی» (Magic Link) و ایمیل، بدون رمز عبور
+     • همه‌ی save ها async شده‌اند و بعد از تمام‌شدن درخواست،
+       دوباره render می‌کنیم تا UI با دیتابیس یکی باشد
+     • یک تابع برای انتقال یک‌باره‌ی داده‌های قدیمی LocalStorage
+
+   فهرست بخش‌ها:
+     ۰) تنظیمات Supabase
+     ۱) ابزارهای کمکی
+     ۲) state
+     ۳) ورود/خروج (احراز هویت)
+     ۴) نگاشت داده‌ها بین JS و جدول‌های دیتابیس
+     ۵) وضعیت سینک (☁️) و صف تلاش دوباره
+     ۶) load() — خواندن از Supabase
+     ۷) save ها — نوشتن در Supabase
+     ۸) منطق عادت‌ها
+     ۹) توست
+    ۱۰) تاپ‌بار و تنظیمات
+    ۱۱) داشبورد
+    ۱۲) عادت‌ها
+    ۱۳) ژورنال
+    ۱۴) توصیه‌ها
+    ۱۵) برین‌استورم
+    ۱۶) باشگاه
+    ۱۷) برنامه ورزشی
+    ۱۸) آمار
+    ۱۹) ناوبری
+    ۲۰) خروجی/ورودی داده
+    ۲۱) انتقال داده‌های LocalStorage
+    ۲۲) مودال عادت
+    ۲۳) بایند کردن رویدادها
+    ۲۴) اجرا
    ============================================================ */
 'use strict';
+
+/* ============================================================
+   ۰) تنظیمات Supabase  ←←← فقط همین دو مقدار را عوض کن
+   ------------------------------------------------------------
+   این دو مقدار را از داشبورد Supabase می‌گیری:
+     Project Settings → API → Project URL  /  anon public key
+   کلید anon برای همه قابل دیدن است و این طبیعی است؛ امنیت واقعی
+   با Row Level Security در فایل supabase/schema.sql تأمین می‌شود.
+   ⚠️ هرگز کلید service_role را اینجا نگذار!
+   ============================================================ */
+const SUPABASE_URL      = 'https://himmgfvhauhaiwpougib.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_ai-dbbzals15I0hE9lj3HA_wrVQaAQH';
+
+/* کلاینت Supabase.
+   اسمش را db گذاشتیم تا با آبجکت global خودِ کتابخانه (supabase)
+   اشتباه نشود. flowType پیش‌فرض «implicit» است؛ برای Magic Link
+   همین درست است چون توکن داخل hash آدرس برمی‌گردد. */
+const db = window.supabase
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        persistSession: true,      // نشست در مرورگر بماند (لازم برای سینک بین دستگاه‌ها)
+        autoRefreshToken: true,    // توکن خودکار تازه شود
+        detectSessionInUrl: true   // توکن لینک ایمیل را از آدرس بخوان
+      }
+    })
+  : null;
 
 /* ============================================================
    ۱) ابزارهای کمکی
@@ -55,6 +114,9 @@ const QUOTES = [
 
 /* ============================================================
    ۲) کلیدهای LocalStorage
+   ------------------------------------------------------------
+   دیگر برای ذخیره استفاده نمی‌شوند! فقط برای «انتقال یک‌باره‌ی»
+   داده‌های قدیمی به ابر لازم‌اند.
    ============================================================ */
 const STORAGE = {
   habits:     'mypath_habits',
@@ -67,9 +129,10 @@ const STORAGE = {
   gym:        'mypath_gym',
   plan:       'mypath_plan'
 };
+const MIGRATED_FLAG = 'mypath_migrated_to_supabase';
 
 /* ============================================================
-   ۳) state
+   ۳) state — همان ساختار قبلی، فقط داده‌هایش از ابر می‌آید
    ============================================================ */
 let state = {
   habits: [],
@@ -83,11 +146,19 @@ let state = {
   plan: { sessionsPerWeek: 3, days: {} }
 };
 
+/* وضعیت کاربر و اپ */
+let currentUser = null;     // آبجکت کاربر Supabase
+let appReady = false;       // آیا داده‌ها از ابر خوانده شده‌اند؟
+let authStarted = false;
+let realtimeChannel = null;
+let migrationAsked = false;
+
 /* متغیرهای کمکی */
 let editingHabitId = null;
 let editingJournalId = null;
 let autosaveTimer = null;
 let weeklyTimer = null;
+let settingsTimer = null;
 
 let editingAdviceId = null;
 let adviceSelectedColor = '#fef3c7';
@@ -103,7 +174,715 @@ let currentPlanDay = null;
 let currentPlanExIdx = null;
 
 /* ============================================================
-   ۴) ذخیره / بارگذاری
+   ۳.۵) ورود / خروج — احراز هویت با Supabase
+   ============================================================ */
+
+/* آیا آدرس و کلید را کاربر پر کرده است؟ */
+function isConfigured() {
+  return Boolean(
+    db &&
+    SUPABASE_URL &&
+    SUPABASE_ANON_KEY &&
+    !SUPABASE_URL.includes('YOUR-PROJECT-REF') &&
+    !SUPABASE_ANON_KEY.includes('YOUR-ANON-PUBLIC-KEY')
+  );
+}
+
+function showAuthScreen() {
+  $('#authScreen').classList.remove('hide');
+  $('#app').hidden = true;
+}
+
+function hideAuthScreen() {
+  $('#authScreen').classList.add('hide');
+  $('#app').hidden = false;
+}
+
+/* پیام داخل کارت ورود
+   kind: 'ok' | 'err' | '' */
+function setAuthMessage(text, kind = '') {
+  const el = $('#authMsg');
+  el.textContent = text || '';
+  el.className = 'auth-msg' + (kind ? ' ' + kind : '');
+}
+
+/* دکمه‌ی «ارسال لینک» را موقتاً غیرفعال/فعال می‌کند */
+function setAuthBusy(busy, label) {
+  const btn = $('#authSubmitBtn');
+  btn.disabled = busy;
+  btn.textContent = busy ? (label || 'در حال ارسال…') : '📧 ارسال لینک ورود';
+}
+
+/* پیام خطاهای رایج Supabase Auth را فارسی می‌کند */
+function faAuthError(msg) {
+  const m = String(msg || '').toLowerCase();
+  if (m.includes('rate limit') || m.includes('too many'))
+    return 'تعداد ایمیل‌های ارسالی زیاد شده. چند دقیقه صبر کن، یا از «کد ۶ رقمی» استفاده کن.';
+  if (m.includes('invalid email') || m.includes('email address'))
+    return 'ایمیل معتبر نیست.';
+  if (m.includes('signups not allowed') || m.includes('signup'))
+    return 'ثبت‌نام در این پروژه بسته است.';
+  if (m.includes('expired')) return 'کد یا لینک منقضی شده. دوباره درخواست بده.';
+  if (m.includes('invalid') || m.includes('token')) return 'کد وارد شده درست نیست.';
+  if (m.includes('fetch') || m.includes('network') || m.includes('failed to'))
+    return 'اتصال به Supabase برقرار نشد. اینترنت را چک کن.';
+  return msg || 'خطای نامشخص';
+}
+
+/* آدرس برگشت بعد از کلیک روی لینک ایمیل
+   باید بدون hash و query باشد تا Supabase بتواند ?code/#access_token را به آن بچسباند.
+   همین آدرس را باید در Supabase → Authentication → URL Configuration
+   به‌عنوان Redirect URL اضافه کنی. */
+function redirectUrl() {
+  return window.location.origin + window.location.pathname;
+}
+
+/* ---- ارسال لینک جادویی ---- */
+async function sendMagicLink() {
+  if (!isConfigured()) {
+    setAuthMessage('اول SUPABASE_URL و SUPABASE_ANON_KEY را بالای app.js بگذار. راهنما: SETUP-fa.md', 'err');
+    return;
+  }
+  const email = ($('#authEmail').value || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    setAuthMessage('یک ایمیل معتبر بنویس.', 'err');
+    $('#authEmail').focus();
+    return;
+  }
+
+  setAuthBusy(true);
+  setAuthMessage('در حال ارسال ایمیل…');
+
+  const { error } = await db.auth.signInWithOtp({
+    email,
+    options: {
+      emailRedirectTo: redirectUrl(),
+      shouldCreateUser: true       // اولین بار که وارد می‌شوی، حساب ساخته می‌شود
+    }
+  });
+
+  setAuthBusy(false);
+
+  if (error) {
+    setAuthMessage('❌ ' + faAuthError(error.message), 'err');
+    console.error('signInWithOtp:', error);
+    return;
+  }
+
+  setAuthMessage(
+    `✅ لینک ورود به ${email} ارسال شد.\nصندوق ایمیل (و تب Spam) را چک کن و روی لینک بزن.\n` +
+    `اگر لینک در همین مرورگر باز شد، خودکار وارد می‌شوی.`,
+    'ok'
+  );
+  $('#authCode').focus();
+}
+
+/* ---- ورود با کد ۶ رقمی (اختیاری، وقتی لینک در مرورگر دیگری باز می‌شود) ---- */
+async function verifyAuthCode() {
+  if (!isConfigured()) return;
+  const email = ($('#authEmail').value || '').trim().toLowerCase();
+  const token = ($('#authCode').value || '').trim();
+
+  if (!email) { setAuthMessage('اول ایمیل را بنویس.', 'err'); $('#authEmail').focus(); return; }
+  if (!/^\d{6}$/.test(token)) { setAuthMessage('کد باید ۶ رقم باشد.', 'err'); $('#authCode').focus(); return; }
+
+  setAuthMessage('در حال بررسی کد…');
+  const { error } = await db.auth.verifyOtp({ email, token, type: 'email' });
+
+  if (error) {
+    setAuthMessage('❌ ' + faAuthError(error.message), 'err');
+    return;
+  }
+  /* اگر موفق باشد، onAuthStateChange خودش handleSession را صدا می‌زند */
+  setAuthMessage('✅ وارد شدی…', 'ok');
+}
+
+/* ---- خروج از حساب (فقط همین دستگاه) ---- */
+async function logout() {
+  if (!confirm('از حساب خارج بشی؟ داده‌ها روی ابر می‌مانند.')) return;
+  /* scope: 'local' یعنی فقط همین دستگاه خارج شود،
+     نه گوشی و لپ‌تاپ دیگر. برای همین از global استفاده نمی‌کنیم. */
+  const { error } = await db.auth.signOut({ scope: 'local' });
+  if (error) toast('خروج انجام نشد: ' + faAuthError(error.message));
+}
+
+/* وقتی کاربر خارج شد */
+function onSignedOut() {
+  appReady = false;
+  currentUser = null;
+  if (realtimeChannel) { try { db.removeChannel(realtimeChannel); } catch (_) {} realtimeChannel = null; }
+  state = {
+    habits: [], logs: {}, journal: [],
+    settings: { name: '', palette: 'green', theme: 'light', reminder: '08:00' },
+    weekly: {}, advice: [], brainstorm: [], gym: [],
+    plan: { sessionsPerWeek: 3, days: {} }
+  };
+  applySettings();
+  showAuthScreen();
+  setAuthMessage('از حساب خارج شدی.', 'ok');
+}
+
+/* وقتی نشست کاربر داریم (بعد از ورود یا در شروع اپ) */
+async function handleSession(session) {
+  if (!session || !session.user) { showAuthScreen(); return; }
+  /* اگر قبلاً همین کاربر لود شده، دوباره کار نکن (جلوگیری از double-load) */
+  if (appReady && currentUser && currentUser.id === session.user.id) return;
+
+  currentUser = session.user;
+  const emailEl = $('#accountEmail');
+  if (emailEl) emailEl.textContent = session.user.email || '—';
+
+  /* صفحه ورود را تا وقتی داده‌ها نیامده‌اند نشان بده؛ این‌طوری
+     کاربر صفحه‌ی خالی نمی‌بیند و ذهنش «داده‌ها پاک شده» نمی‌شود. */
+  setAuthMessage('☁️ در حال بارگذاری داده‌هایت…', 'ok');
+
+  try {
+    await load();          // ۶) خواندن همه‌ی داده‌ها از Supabase
+    appReady = true;
+
+    hideAuthScreen();      // فقط بعد از موفقیت، اپ را نشان بده
+    setAuthMessage('', '');
+    setSync('ok', '✓ همگام با ابر');
+    applySettings();
+    renderTopbar();
+    renderAll();           // صفحه‌ی فعال را دوباره می‌سازد
+    subscribeRealtime();   // سینک زنده بین لپ‌تاپ و گوشی
+    maybeOfferMigration(); // اگر داده‌ی LocalStorage مانده، پیشنهاد انتقال
+  } catch (err) {
+    /* اگر خواندن نشد، اپ را قفل نگه می‌داریم تا کاربر با
+       داده‌ی خالی اشتباهی چیزی ذخیره نکند. */
+    console.error('خطا در خواندن داده‌ها از Supabase:', err);
+    appReady = false;
+    currentUser = null;
+    showAuthScreen();
+    setAuthMessage(
+      'داده‌ها از ابر خوانده نشد:\n' + loadFailedHint(err) +
+      '\n\nراهنما: SETUP-fa.md → بخش «عیب‌یابی»',
+      'err'
+    );
+    $('#authRetryBtn').hidden = false;
+  }
+}
+
+/* شروع فرایند احراز هویت */
+async function startAuth() {
+  if (authStarted) return;
+  authStarted = true;
+
+  if (!window.supabase) {
+    showAuthScreen();
+    setAuthMessage(
+      '⚠️ کتابخانه‌ی Supabase بارگذاری نشد.\n' +
+      'اتصال به cdn.jsdelivr.net را چک کن (یا از فیلترشکن استفاده کن) و صفحه را رفرش کن.',
+      'err'
+    );
+    return;
+  }
+
+  if (!isConfigured()) {
+    showAuthScreen();
+    setAuthMessage(
+      '⚠️ تنظیمات Supabase پر نشده.\n' +
+      'بالای فایل app.js مقدار SUPABASE_URL و SUPABASE_ANON_KEY را از داشبورد Supabase کپی کن.\n' +
+      'راهنمای کامل در فایل SETUP-fa.md است.',
+      'err'
+    );
+    return;
+  }
+
+  /* خطاهای برگشتی لینک ایمیل (مثلاً منقضی‌شده) داخل hash آدرس هستند */
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const hashError = hash.get('error_description') || hash.get('error');
+  if (hashError) {
+    showAuthScreen();
+    setAuthMessage('ورود انجام نشد: ' + decodeURIComponent(hashError).replace(/\+/g, ' '), 'err');
+    /* hash را پاک کن تا با رفرش دوباره همان خطا نیاید */
+    try {
+      history.replaceState(null, '', redirectUrl() + window.location.search);
+    } catch (_) { /* در بعضی مرورگرها/file:// ممکن است اجازه ندهد */ }
+  }
+
+  /* هر تغییری در وضعیت ورود (ورود، خروج، تازه‌شدن توکن) */
+  db.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_OUT') { onSignedOut(); return; }
+    /* نکته: صدا زدن متدهای دیتابیس داخل همین callback می‌تواند
+       قفل (deadlock) ایجاد کند؛ پس با setTimeout به بیرون پرش می‌دهیم. */
+    setTimeout(() => { handleSession(session); }, 0);
+  });
+
+  /* نشست ذخیره‌شده در مرورگر را بخوان (اگر کاربر قبلاً وارد شده بود) */
+  const { data } = await db.auth.getSession();
+  if (data && data.session) {
+    setTimeout(() => { handleSession(data.session); }, 0);
+  } else {
+    showAuthScreen();
+  }
+}
+
+/* ============================================================
+   ۴) نگاشت داده‌ها: آبجکت JS ⇄ ردیف جدول
+   ------------------------------------------------------------
+   نام ستون‌ها با نام فیلدهای JS کمی فرق دارد (مثلاً entry_date
+   به‌جای date). این توابع این تبدیل را یک‌جا انجام می‌دهند تا
+   بقیه‌ی کد دست‌نخورده بماند.
+   ============================================================ */
+const toMs = (v) => (v ? new Date(v).getTime() : Date.now());
+
+/* ---------- habits ---------- */
+function habitToRow(h, idx = 0) {
+  return {
+    user_id: currentUser.id,
+    id: h.id,
+    title: h.title || 'بدون عنوان',
+    icon: h.icon || '⭐',
+    color: h.color || '#10b981',
+    days: Array.isArray(h.days) ? h.days : [],
+    sort_order: Number.isFinite(h.order) ? h.order : idx
+  };
+}
+function habitFromRow(r) {
+  return {
+    id: r.id,
+    title: r.title || '',
+    icon: r.icon || '⭐',
+    color: r.color || '#10b981',
+    days: Array.isArray(r.days) ? r.days : [],
+    order: r.sort_order ?? 0
+  };
+}
+
+/* ---------- journal_entries ---------- */
+function journalToRow(e) {
+  return {
+    user_id: currentUser.id,
+    id: e.id,
+    title: e.title || '',
+    entry_date: e.date || todayISO(),
+    mood: Number(e.mood) || 3,
+    tags: Array.isArray(e.tags) ? e.tags : [],
+    good: e.good || '',
+    learned: e.learned || '',
+    feeling: e.feeling || '',
+    tomorrow: e.tomorrow || '',
+    created_at: new Date(e.createdAt || Date.now()).toISOString()
+  };
+}
+function journalFromRow(r) {
+  return {
+    id: r.id,
+    title: r.title || '',
+    date: r.entry_date,
+    mood: Number(r.mood) || 3,
+    tags: Array.isArray(r.tags) ? r.tags : [],
+    good: r.good || '',
+    learned: r.learned || '',
+    feeling: r.feeling || '',
+    tomorrow: r.tomorrow || '',
+    createdAt: toMs(r.created_at)
+  };
+}
+
+/* ---------- advice ---------- */
+function adviceToRow(a) {
+  return {
+    user_id: currentUser.id,
+    id: a.id,
+    body: a.text || '',
+    color: a.color || '#fef3c7',
+    pinned: !!a.pinned,
+    created_at: new Date(a.createdAt || Date.now()).toISOString()
+  };
+}
+function adviceFromRow(r) {
+  return {
+    id: r.id,
+    text: r.body || '',
+    color: r.color || '#fef3c7',
+    pinned: !!r.pinned,
+    createdAt: toMs(r.created_at)
+  };
+}
+
+/* ---------- brainstorm_topics ---------- */
+function topicToRow(t) {
+  return {
+    user_id: currentUser.id,
+    id: t.id,
+    title: t.title || 'بدون عنوان',
+    icon: t.icon || '🧠',
+    color: t.color || '#fef3c7',
+    content: t.content || '',
+    created_at: new Date(t.createdAt || Date.now()).toISOString(),
+    updated_at: new Date(t.updatedAt || Date.now()).toISOString()
+  };
+}
+function topicFromRow(r) {
+  return {
+    id: r.id,
+    title: r.title || '',
+    icon: r.icon || '🧠',
+    color: r.color || '#fef3c7',
+    content: r.content || '',
+    createdAt: toMs(r.created_at),
+    updatedAt: toMs(r.updated_at)
+  };
+}
+
+/* ---------- gym_sessions ---------- */
+function gymToRow(g) {
+  return {
+    user_id: currentUser.id,
+    id: g.id,
+    name: g.name || 'جلسه',
+    session_date: g.date || todayISO(),
+    duration: Number(g.duration) || 0,
+    quality: Number(g.quality) || 3,
+    energy: Number(g.energy) || 3,
+    note: g.note || '',
+    exercises: Array.isArray(g.exercises) ? g.exercises : [],
+    created_at: new Date(g.createdAt || Date.now()).toISOString()
+  };
+}
+function gymFromRow(r) {
+  return {
+    id: r.id,
+    name: r.name || '',
+    date: r.session_date,
+    duration: Number(r.duration) || 0,
+    quality: Number(r.quality) || 3,
+    energy: Number(r.energy) || 3,
+    note: r.note || '',
+    exercises: Array.isArray(r.exercises) ? r.exercises : [],
+    createdAt: toMs(r.created_at)
+  };
+}
+
+/* ============================================================
+   ۵) وضعیت سینک و صف «تلاش دوباره»
+   ------------------------------------------------------------
+   هر نوشتن در دیتابیس از withSync رد می‌شود تا:
+     • بالای صفحه نشان دهد «در حال ذخیره…» / «ذخیره شد» / «خطا»
+     • اگر اینترنت قطع بود، عملیات در صف بماند و بعد دوباره اجرا شود.
+       (همه‌ی عملیات ما upsert/delete هستند، پس تکرارشان بی‌خطر است.)
+   ============================================================ */
+let syncInFlight = 0;
+let syncFadeTimer = null;
+const retryQueue = [];
+
+function setSync(kind, text) {
+  const el = $('#syncStatus');
+  if (!el) return;
+  clearTimeout(syncFadeTimer);
+  el.className = 'sync-status' + (kind ? ' ' + kind : '');
+  el.textContent = text || '';
+  if (kind === 'ok') {
+    syncFadeTimer = setTimeout(() => {
+      el.className = 'sync-status';
+      el.textContent = '';
+    }, 2600);
+  }
+}
+
+/* خطای شبکه را از خطای منطقی (مثل RLS) جدا می‌کند */
+function isNetworkError(err) {
+  const m = String((err && (err.message || err.error_description)) || err).toLowerCase();
+  return !navigator.onLine || /fetch|network|timeout|failed to|load failed/.test(m);
+}
+
+/* اجرای یک عملیات نوشتن با مدیریت وضعیت و خطا
+   op باید یک تابع باشد که Promise<{error}> برگرداند. */
+async function withSync(op) {
+  if (!currentUser) return false;      // بدون لاگین هیچ نوشتنی انجام نمی‌شود
+
+  syncInFlight++;
+  setSync('busy', '☁️ در حال ذخیره…');
+
+  try {
+    const res = await op();
+    if (res && res.error) throw res.error;
+    return true;
+  } catch (err) {
+    console.error('خطای ذخیره در Supabase:', err);
+    if (isNetworkError(err)) {
+      /* آفلاین: در صف بگذار تا بعداً دوباره تلاش شود.
+         شناسه‌ی کاربر را هم نگه می‌داریم تا اگر بین راه حساب عوض شد،
+         تغییرات به حساب دیگری ریخته نشود. */
+      if (retryQueue.length < 300) retryQueue.push({ uid: currentUser.id, op });
+      setSync('err', '⚠️ آفلاین — ' + retryQueue.length + ' تغییر در صف');
+    } else {
+      setSync('err', '⚠️ خطای ذخیره');
+      toast('ذخیره در ابر انجام نشد: ' + (err.message || err));
+    }
+    return false;
+  } finally {
+    syncInFlight--;
+    if (syncInFlight === 0 && $('#syncStatus').classList.contains('busy')) {
+      setSync('ok', '✓ ذخیره شد');
+    }
+  }
+}
+
+/* اجرای دوباره‌ی صف وقتی اینترنت برگشت */
+async function flushRetryQueue() {
+  if (!retryQueue.length || !currentUser) return;
+
+  /* فقط تغییرات همان کاربری که الان لاگین است اجرا می‌شود */
+  const mine = retryQueue.filter((e) => e.uid === currentUser.id);
+  retryQueue.length = 0;
+
+  for (const entry of mine) {
+    try {
+      const res = await entry.op();
+      if (res && res.error) throw res.error;
+    } catch (err) {
+      retryQueue.push(entry);
+    }
+  }
+  if (retryQueue.length) setSync('err', '⚠️ ' + retryQueue.length + ' تغییر ذخیره نشده');
+  else setSync('ok', '✓ همه تغییرات ذخیره شد');
+}
+window.addEventListener('online', () => { flushRetryQueue(); });
+
+/* ============================================================
+   ۶) load() — خواندن همه‌ی داده‌ها از Supabase
+   ------------------------------------------------------------
+   به‌جای localStorage.getItem، از هشت جدول به‌صورت موازی می‌خوانیم.
+   ============================================================ */
+async function load() {
+  if (!currentUser) return;
+  setSync('busy', '☁️ در حال دریافت داده…');
+
+  const [habitsRes, logsRes, journalRes, adviceRes, topicsRes, gymRes, planRes, settingsRes] =
+    await Promise.all([
+      db.from('habits').select('*').order('sort_order', { ascending: true }),
+      db.from('logs').select('habit_id, log_date, done').eq('done', true),
+      db.from('journal_entries').select('*')
+        .order('entry_date', { ascending: false })
+        .order('created_at', { ascending: false }),
+      db.from('advice').select('*').order('created_at', { ascending: false }),
+      db.from('brainstorm_topics').select('*').order('updated_at', { ascending: false }),
+      db.from('gym_sessions').select('*').order('session_date', { ascending: false }),
+      db.from('workout_plans').select('*').eq('user_id', currentUser.id).maybeSingle(),
+      db.from('user_settings').select('*').eq('user_id', currentUser.id).maybeSingle()
+    ]);
+
+  /* اگر یکی از جدول‌ها خطا داد (مثلاً schema اجرا نشده)، کل بارگذاری را متوقف کن
+     تا با داده‌ی نصفه‌ناقص کار نکنیم. */
+  const failed = [habitsRes, logsRes, journalRes, adviceRes, topicsRes, gymRes, planRes, settingsRes]
+    .find((r) => r.error);
+  if (failed) throw failed.error;
+
+  /* --- عادت‌ها --- */
+  state.habits = habitsRes.data.map(habitFromRow);
+
+  /* --- تیک‌ها: آرایه‌ی ردیف‌ها → آبجکت تودرتو { iso: { habitId: true } } --- */
+  const logs = {};
+  logsRes.data.forEach((r) => {
+    if (!r.done) return;
+    logs[r.log_date] = logs[r.log_date] || {};
+    logs[r.log_date][r.habit_id] = true;
+  });
+  state.logs = logs;
+
+  /* --- بقیه‌ی بخش‌ها --- */
+  state.journal    = journalRes.data.map(journalFromRow);
+  state.advice     = adviceRes.data.map(adviceFromRow);
+  state.brainstorm = topicsRes.data.map(topicFromRow);
+  state.gym        = gymRes.data.map(gymFromRow);
+  state.plan       = (planRes.data && planRes.data.plan) || { sessionsPerWeek: 3, days: {} };
+
+  const s = settingsRes.data;
+  state.settings = {
+    name:     (s && s.name)     || '',
+    palette:  (s && s.palette)  || 'green',
+    theme:    (s && s.theme)    || 'light',
+    reminder: (s && s.reminder) || '08:00'
+  };
+  state.weekly = (s && s.weekly) || {};
+
+  ensurePlanDefaults();
+
+  /* --- اگر حساب کاملاً تازه است: عادت‌های پیش‌فرض را بساز --- */
+  const isFreshAccount = !s;   // هنوز ردیفی در user_settings ندارد
+  if (isFreshAccount) {
+    if (state.habits.length === 0) state.habits = defaultHabits();
+    await Promise.all([saveHabitOrder(), saveSettings()]);
+  }
+
+  setSync('ok', '✓ همگام با ابر');
+}
+
+/* اگر نتوانستیم بخوانیم، دست‌کم پیام واضح بده */
+function loadFailedHint(err) {
+  const m = String(err && err.message || '').toLowerCase();
+  if (m.includes('does not exist') || m.includes('relation')) {
+    return 'جدول‌ها ساخته نشده‌اند. فایل supabase/schema.sql را در SQL Editor اجرا کن.';
+  }
+  if (m.includes('permission') || m.includes('policy') || m.includes('rls')) {
+    return 'دسترسی رد شد. سیاست‌های RLS را از schema.sql دوباره اجرا کن.';
+  }
+  return err && err.message;
+}
+
+/* ============================================================
+   ۷) save ها — نوشتن در Supabase
+   ------------------------------------------------------------
+   همه async هستند و خروجی‌شان true/false است.
+   قاعده: هر جا داده عوض شد → await → بعد render.
+   ============================================================ */
+
+/* ---------- عادت‌ها ---------- */
+const saveHabit = (h) =>
+  withSync(() => db.from('habits').upsert(habitToRow(h, state.habits.indexOf(h)), { onConflict: 'user_id,id' }));
+
+const saveHabitOrder = () =>
+  withSync(() => db.from('habits')
+    .upsert(state.habits.map((h, i) => habitToRow(h, i)), { onConflict: 'user_id,id' }));
+
+const deleteHabitRow = (id) =>
+  withSync(() => db.from('habits').delete().eq('id', id));
+
+/* با حذف عادت، همه‌ی تیک‌های آن هم پاک می‌شوند */
+const deleteHabitLogs = (habitId) =>
+  withSync(() => db.from('logs').delete().eq('habit_id', habitId));
+
+/* ---------- تیک‌های روزانه ---------- */
+/*  اگر done=true باشد ردیف را insert/update می‌کنیم،
+    وگرنه ردیف را حذف می‌کنیم. هر دو حالت idempotent هستند،
+    یعنی اگر دو دستگاه هم‌زمان همین کار را بکنند خرابی پیش نمی‌آید. */
+const setLogRow = (habitId, iso, done) => withSync(() =>
+  done
+    ? db.from('logs').upsert(
+        { user_id: currentUser.id, habit_id: habitId, log_date: iso, done: true },
+        { onConflict: 'user_id,habit_id,log_date' })
+    : db.from('logs').delete().eq('habit_id', habitId).eq('log_date', iso)
+);
+
+/* ---------- ژورنال ---------- */
+const saveJournalEntry = (entry) =>
+  withSync(() => db.from('journal_entries').upsert(journalToRow(entry), { onConflict: 'user_id,id' }));
+
+const deleteJournalRow = (id) =>
+  withSync(() => db.from('journal_entries').delete().eq('id', id));
+
+/* ---------- توصیه‌ها ---------- */
+const saveAdviceRow = (a) =>
+  withSync(() => db.from('advice').upsert(adviceToRow(a), { onConflict: 'user_id,id' }));
+
+const deleteAdviceRow = (id) =>
+  withSync(() => db.from('advice').delete().eq('id', id));
+
+/* ---------- برین‌استورم ---------- */
+const saveTopicRow = (t) =>
+  withSync(() => db.from('brainstorm_topics').upsert(topicToRow(t), { onConflict: 'user_id,id' }));
+
+const deleteTopicRow = (id) =>
+  withSync(() => db.from('brainstorm_topics').delete().eq('id', id));
+
+/* ---------- باشگاه ---------- */
+const saveGymRow = (g) =>
+  withSync(() => db.from('gym_sessions').upsert(gymToRow(g), { onConflict: 'user_id,id' }));
+
+const deleteGymRow = (id) =>
+  withSync(() => db.from('gym_sessions').delete().eq('id', id));
+
+/* ---------- برنامه ورزشی (یک ردیف برای هر کاربر) ---------- */
+const savePlan = () =>
+  withSync(() => db.from('workout_plans').upsert(
+    { user_id: currentUser.id, plan: state.plan, updated_at: new Date().toISOString() },
+    { onConflict: 'user_id' }));
+
+/* ---------- تنظیمات + یادداشت هفتگی (یک ردیف برای هر کاربر) ---------- */
+const saveSettings = () =>
+  withSync(() => db.from('user_settings').upsert(
+    {
+      user_id: currentUser.id,
+      name: state.settings.name || '',
+      palette: state.settings.palette || 'green',
+      theme: state.settings.theme || 'light',
+      reminder: state.settings.reminder || '08:00',
+      weekly: state.weekly || {},
+      updated_at: new Date().toISOString()
+    },
+    { onConflict: 'user_id' }));
+
+/* برای input هایی مثل «اسم تو» که با هر حرف عوض می‌شوند،
+   ذخیره را کمی عقب می‌اندازیم تا برای هر کاراکتر یک درخواست نرود. */
+function queueSaveSettings() {
+  clearTimeout(settingsTimer);
+  settingsTimer = setTimeout(() => { saveSettings(); }, 600);
+}
+
+/* ============================================================
+   ۷.۵) همگام‌سازی زنده (Realtime) و تازه‌سازی موقع برگشت
+   ============================================================ */
+
+/* آیا الان «امن» است که داده‌ها را از نو بخوانیم و صفحه را دوباره بسازیم؟
+   اگر کاربر در حال تایپ در ژورنال/برین‌استورم یا باز بودن مودال باشد، نه. */
+function canAutoRefresh() {
+  if ($$('.modal-backdrop.open').length > 0) return false;
+  if (!$('#journalEditor').hidden) return false;
+  if (!$('#brainstormEditorView').hidden) return false;
+  const el = document.activeElement;
+  if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return false;
+  return true;
+}
+
+let refreshTimer = null;
+let lastRefreshAt = 0;
+
+function scheduleCloudRefresh() {
+  if (!appReady) return;
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(async () => {
+    if (!appReady || syncInFlight > 0 || !canAutoRefresh()) return;
+    try {
+      await load();
+      renderAll();
+      lastRefreshAt = Date.now();
+    } catch (err) {
+      console.warn('تازه‌سازی خودکار نشد:', err);
+    }
+  }, 1500);
+}
+
+/* گوش دادن به تغییرات جدول‌ها؛ اگر روی گوشی چیزی عوض شود،
+   لپ‌تاپ هم بدون رفرش به‌روز می‌شود.
+   (اگر Realtime در Supabase فعال نباشد، این بخش فقط بی‌صدا کاری نمی‌کند.) */
+function subscribeRealtime() {
+  if (!currentUser || !db) return;
+  try {
+    if (realtimeChannel) db.removeChannel(realtimeChannel);
+
+    const filter = `user_id=eq.${currentUser.id}`;
+    const tables = ['habits', 'logs', 'journal_entries', 'advice',
+                    'brainstorm_topics', 'gym_sessions', 'workout_plans', 'user_settings'];
+
+    realtimeChannel = db.channel('mypath-sync');
+    tables.forEach((table) => {
+      realtimeChannel.on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table, filter },
+        () => { if (!syncInFlight) scheduleCloudRefresh(); }
+      );
+    });
+    realtimeChannel.subscribe();
+  } catch (err) {
+    console.warn('Realtime فعال نشد (مهم نیست):', err);
+  }
+}
+
+/* وقتی به تب برمی‌گردی (مثلاً از گوشی به لپ‌تاپ)، داده‌ها را تازه کن */
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!appReady || !canAutoRefresh()) return;
+  if (Date.now() - lastRefreshAt < 15000) return;
+  lastRefreshAt = Date.now();
+  load().then(renderAll).catch((e) => console.warn(e));
+});
+
+/* ============================================================
+   ۸) منطق عادت‌ها (بدون تغییر نسبت به نسخه قبل)
    ============================================================ */
 function defaultHabits() {
   return [
@@ -127,51 +906,44 @@ function ensurePlanDefaults() {
   }
 }
 
-function load() {
-  try {
-    const rawHabits = localStorage.getItem(STORAGE.habits);
-    state.habits = rawHabits ? JSON.parse(rawHabits) : defaultHabits();
-    if (!rawHabits) save('habits');
-
-    state.logs       = JSON.parse(localStorage.getItem(STORAGE.logs))       || {};
-    state.journal    = JSON.parse(localStorage.getItem(STORAGE.journal))    || [];
-    state.weekly     = JSON.parse(localStorage.getItem(STORAGE.weekly))     || {};
-    state.advice     = JSON.parse(localStorage.getItem(STORAGE.advice))     || [];
-    state.brainstorm = JSON.parse(localStorage.getItem(STORAGE.brainstorm)) || [];
-    state.gym        = JSON.parse(localStorage.getItem(STORAGE.gym))        || [];
-    state.plan       = JSON.parse(localStorage.getItem(STORAGE.plan))       || { sessionsPerWeek: 3, days: {} };
-
-    const rawSettings = JSON.parse(localStorage.getItem(STORAGE.settings));
-    if (rawSettings) Object.assign(state.settings, rawSettings);
-
-    ensurePlanDefaults();
-  } catch (err) {
-    console.error('خطا در خواندن داده‌ها:', err);
-  }
-}
-
-function save(key) {
-  try {
-    localStorage.setItem(STORAGE[key], JSON.stringify(state[key]));
-  } catch (err) {
-    console.error('خطا در ذخیره:', err);
-  }
-}
-
-/* ============================================================
-   ۵) منطق عادت‌ها
-   ============================================================ */
 const isScheduled = (habit, iso) => {
   if (!habit.days || habit.days.length === 0) return true;
   return habit.days.includes(persianDayIndex(iso));
 };
 const isChecked = (habitId, iso) => !!(state.logs[iso] && state.logs[iso][habitId]);
 
-function toggleHabit(habitId, iso) {
+/* ✅ تیک زدن/برداشتن تیک یک عادت
+   منطق خواسته‌شده:
+     • اگر برای آن روز/عادت لاگ وجود دارد → حذفش کن
+     • اگر وجود ندارد → اضافه‌اش کن
+   چون state همان چیزی است که از دیتابیس خوانده‌ایم، وجود/نبودِ
+   کلید در state.logs همان «وجود لاگ» است.
+   برای حس خوب، UI را بلافاصله و دوباره بعد از پاسخ سرور می‌سازیم. */
+async function toggleHabit(habitId, iso) {
+  if (!appReady) return;
+
+  const wasChecked = isChecked(habitId, iso);
+
+  /* ۱) خوش‌بینانه state را عوض کن (واکنش فوری دکمه) */
   state.logs[iso] = state.logs[iso] || {};
-  if (state.logs[iso][habitId]) delete state.logs[iso][habitId];
+  if (wasChecked) delete state.logs[iso][habitId];
   else state.logs[iso][habitId] = true;
-  save('logs');
+  renderTasks();
+  renderDashboard();
+
+  /* ۲) حالا در دیتابیس ثبت کن (insert یا delete) */
+  const ok = await setLogRow(habitId, iso, !wasChecked);
+
+  /* ۳) اگر ذخیره نشد، تغییر را برگردان تا UI دروغ نگوید */
+  if (!ok) {
+    state.logs[iso] = state.logs[iso] || {};
+    if (wasChecked) state.logs[iso][habitId] = true;
+    else delete state.logs[iso][habitId];
+  }
+
+  /* ۴) بعد از پایان عملیات دیتابیس، دوباره رندر کن */
+  renderTasks();
+  renderDashboard();
 }
 
 function streak(habit) {
@@ -261,7 +1033,7 @@ function isInThisWeek(iso) {
 }
 
 /* ============================================================
-   ۶) توست
+   ۹) توست
    ============================================================ */
 function toast(msg) {
   const el = document.createElement('div');
@@ -276,7 +1048,7 @@ function toast(msg) {
 }
 
 /* ============================================================
-   ۷) تاپ‌بار و تنظیمات
+   ۱۰) تاپ‌بار و تنظیمات
    ============================================================ */
 function renderTopbar() {
   const iso = todayISO();
@@ -291,15 +1063,27 @@ function applySettings() {
   $('#topbarUser').textContent = state.settings.name ? `سلام، ${state.settings.name} 👋` : '';
 }
 
+/* تم صفحه‌ی ورود از تنظیمات ذخیره‌شده‌ی محلی خوانده می‌شود
+   (فقط برای اینکه قبل از لاگین هم تم درست باشد؛ نوشتنی در کار نیست) */
+function applyAuthTheme() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE.settings) || 'null');
+    if (raw && raw.theme) document.documentElement.dataset.theme = raw.theme;
+    if (raw && raw.palette) document.documentElement.dataset.palette = raw.palette;
+    if (raw && raw.theme) $('#themeToggle').textContent = raw.theme === 'dark' ? '☀️' : '🌙';
+  } catch (_) { /* بی‌اهمیت */ }
+}
+
 function renderSettings() {
   $('#setName').value = state.settings.name || '';
   $('#setReminder').value = state.settings.reminder || '08:00';
   $$('#paletteRow button').forEach((b) =>
     b.classList.toggle('sel', b.dataset.palette === state.settings.palette));
+  if (currentUser) $('#accountEmail').textContent = currentUser.email || '—';
 }
 
 /* ============================================================
-   ۸) داشبورد
+   ۱۱) داشبورد
    ============================================================ */
 function bestHabitByStreak() {
   if (state.habits.length === 0) return null;
@@ -357,7 +1141,7 @@ function renderDashboard() {
 }
 
 /* ============================================================
-   ۹) عادت‌ها
+   ۱۲) عادت‌ها
    ============================================================ */
 function renderTasks() {
   const today = todayISO();
@@ -403,27 +1187,38 @@ function renderTasks() {
   }).join('');
 }
 
-function moveHabit(id, dir) {
+async function moveHabit(id, dir) {
   const i = state.habits.findIndex((h) => h.id === id);
   const j = i + dir;
   if (i < 0 || j < 0 || j >= state.habits.length) return;
   [state.habits[i], state.habits[j]] = [state.habits[j], state.habits[i]];
   state.habits.forEach((h, idx) => (h.order = idx));
-  save('habits');
+  renderTasks();
+  await saveHabitOrder();   // ترتیب جدید را در ابر ثبت کن
   renderTasks();
 }
 
-function deleteHabit(id) {
+async function deleteHabit(id) {
   if (!confirm('این عادت حذف بشه؟ (تاریخچه‌اش هم پاک می‌شه)')) return;
+
   state.habits = state.habits.filter((h) => h.id !== id);
+  /* ترتیب‌ها را دوباره ۰،۱،۲… کن تا جای خالی نماند */
+  state.habits.forEach((h, idx) => (h.order = idx));
   Object.values(state.logs).forEach((day) => { delete day[id]; });
-  save('habits'); save('logs');
-  renderTasks(); renderDashboard();
+  renderTasks();
+  renderDashboard();
+
+  /* اول تیک‌های این عادت، بعد خود عادت (تا ردیف یتیم نماند) */
+  await deleteHabitLogs(id);
+  await deleteHabitRow(id);
+  await saveHabitOrder();
+  renderTasks();
+  renderDashboard();
   toast('حذف شد');
 }
 
 /* ============================================================
-   ۱۰) ژورنال
+   ۱۳) ژورنال
    ============================================================ */
 function renderJournalList() {
   const search = ($('#jSearch').value || '').trim().toLowerCase();
@@ -527,47 +1322,67 @@ function closeEditor() {
   editingJournalId = null;
   $('#autosaveInd').textContent = '';
 }
-function saveEditor(explicit = true) {
+
+/* ذخیره‌ی ورودی ژورنال در Supabase
+   created_at فقط بار اول ست می‌شود؛ ویرایش‌ها همان ردیف را update می‌کنند. */
+async function saveEditor(explicit = true) {
   clearTimeout(autosaveTimer);
+  if (!appReady) return;
+
   const data = readEditor();
+  let entry;
+
   if (editingJournalId) {
-    const e = state.journal.find((x) => x.id === editingJournalId);
-    if (e) Object.assign(e, data);
+    entry = state.journal.find((x) => x.id === editingJournalId);
+    if (!entry) return;
+    Object.assign(entry, data);
   } else {
     if (!editorHasContent(data)) {
       if (explicit) toast('چیزی برای ذخیره نیست');
       return;
     }
-    const entry = Object.assign({ id: uid(), createdAt: Date.now() }, data);
+    entry = Object.assign({ id: uid(), createdAt: Date.now() }, data);
     state.journal.push(entry);
     editingJournalId = entry.id;
   }
-  save('journal');
+
+  /* صبر می‌کنیم تا در دیتابیس ثبت شود، بعد UI را تازه می‌کنیم */
+  const ok = await saveJournalEntry(entry);
+
   renderJournalList();
-  if (explicit) { closeEditor(); toast('ذخیره شد ✓'); }
+  renderDashboard();
+
+  if (explicit) {
+    if (ok) { closeEditor(); toast('ذخیره شد ✓'); }
+    else    { toast('ذخیره نشد — اتصال را چک کن'); }
+  }
 }
+
 function scheduleAutosave() {
   clearTimeout(autosaveTimer);
   $('#autosaveInd').textContent = 'در حال ذخیره...';
-  autosaveTimer = setTimeout(() => {
-    saveEditor(false);
+  autosaveTimer = setTimeout(async () => {
+    await saveEditor(false);
     $('#autosaveInd').textContent = 'ذخیره شد ✓';
     setTimeout(() => {
       if ($('#autosaveInd').textContent === 'ذخیره شد ✓') $('#autosaveInd').textContent = '';
     }, 2000);
   }, 2000);
 }
-function deleteJournal(id) {
+
+async function deleteJournal(id) {
   if (!confirm('این ورودی حذف بشه؟')) return;
   state.journal = state.journal.filter((e) => e.id !== id);
-  save('journal');
-  if (editingJournalId === id) closeEditor();
   renderJournalList();
+  renderDashboard();
+  await deleteJournalRow(id);
+  renderJournalList();
+  if (editingJournalId === id) closeEditor();
   toast('حذف شد');
 }
 
 /* ============================================================
-   ۱۱) تاپ توصیه‌ها
+   ۱۴) تاپ توصیه‌ها
    ============================================================ */
 function renderAdvice() {
   const search = ($('#adviceSearch').value || '').trim().toLowerCase();
@@ -626,40 +1441,51 @@ function closeAdviceModal() {
   $('#adviceModal').classList.remove('open');
   editingAdviceId = null;
 }
-function saveAdviceFromModal() {
+
+async function saveAdviceFromModal() {
   const text = $('#adviceText').value.trim();
   if (!text) { toast('متن توصیه رو بنویس'); return; }
+
+  let item;
   if (editingAdviceId) {
-    const a = state.advice.find((x) => x.id === editingAdviceId);
-    if (a) { a.text = text; a.color = adviceSelectedColor; }
+    item = state.advice.find((x) => x.id === editingAdviceId);
+    if (!item) return;
+    item.text = text;
+    item.color = adviceSelectedColor;
   } else {
-    state.advice.push({
+    item = {
       id: uid(), text, color: adviceSelectedColor,
       pinned: false, createdAt: Date.now()
-    });
+    };
+    state.advice.push(item);
   }
-  save('advice');
+
+  const ok = await saveAdviceRow(item);
   closeAdviceModal();
   renderAdvice();
-  toast('ذخیره شد ✓');
+  toast(ok ? 'ذخیره شد ✓' : 'ذخیره نشد — اتصال را چک کن');
 }
-function toggleAdvicePin(id) {
+
+async function toggleAdvicePin(id) {
   const a = state.advice.find((x) => x.id === id);
   if (!a) return;
   a.pinned = !a.pinned;
-  save('advice');
+  renderAdvice();
+  await saveAdviceRow(a);
   renderAdvice();
 }
-function deleteAdvice(id) {
+
+async function deleteAdvice(id) {
   if (!confirm('این توصیه حذف بشه؟')) return;
   state.advice = state.advice.filter((a) => a.id !== id);
-  save('advice');
+  renderAdvice();
+  await deleteAdviceRow(id);
   renderAdvice();
   toast('حذف شد');
 }
 
 /* ============================================================
-   ۱۲) برین‌استورم
+   ۱۵) برین‌استورم
    ============================================================ */
 function renderBrainstorm() {
   const search = ($('#topicSearch').value || '').trim().toLowerCase();
@@ -710,31 +1536,39 @@ function closeTopicModal() {
   $('#topicModal').classList.remove('open');
   editingTopicId = null;
 }
-function saveTopicFromModal() {
+
+async function saveTopicFromModal() {
   const title = $('#topicTitle').value.trim();
   if (!title) { toast('اسم موضوع رو بنویس'); return; }
   const icon = $('#topicIcon').value.trim() || '🧠';
   const color = topicSelectedColor;
+
+  let topic;
   if (editingTopicId) {
-    const t = state.brainstorm.find((x) => x.id === editingTopicId);
-    if (t) { t.title = title; t.icon = icon; t.color = color; t.updatedAt = Date.now(); }
+    topic = state.brainstorm.find((x) => x.id === editingTopicId);
+    if (!topic) return;
+    topic.title = title; topic.icon = icon; topic.color = color; topic.updatedAt = Date.now();
   } else {
-    state.brainstorm.push({
+    topic = {
       id: uid(), title, icon, color, content: '',
       createdAt: Date.now(), updatedAt: Date.now()
-    });
+    };
+    state.brainstorm.push(topic);
   }
-  save('brainstorm');
+
+  const ok = await saveTopicRow(topic);
   closeTopicModal();
   renderBrainstorm();
-  toast('ذخیره شد ✓');
+  toast(ok ? 'ذخیره شد ✓' : 'ذخیره نشد — اتصال را چک کن');
 }
-function deleteTopic(id) {
+
+async function deleteTopic(id) {
   if (!confirm('این موضوع و محتواش حذف بشه؟')) return;
   state.brainstorm = state.brainstorm.filter((t) => t.id !== id);
-  save('brainstorm');
   renderBrainstorm();
   if (currentTopicId === id) closeTopicEditor();
+  await deleteTopicRow(id);
+  renderBrainstorm();
   toast('حذف شد');
 }
 
@@ -763,26 +1597,34 @@ function updateBrainstormWordCount() {
   const count = txt ? txt.split(/\s+/).length : 0;
   $('#brainstormWordCount').textContent = `${count} کلمه`;
 }
-function saveBrainstormContent(silent = false) {
-  if (!currentTopicId) return;
+
+/* ذخیره‌ی متن یک موضوع؛ بعد از پایان درخواست، لیست موضوع‌ها هم تازه می‌شود */
+async function saveBrainstormContent(silent = false) {
+  if (!currentTopicId || !appReady) return false;
   const t = state.brainstorm.find((x) => x.id === currentTopicId);
-  if (!t) return;
+  if (!t) return false;
+
   t.content = $('#brainstormContent').value;
   t.updatedAt = Date.now();
-  save('brainstorm');
-  if (!silent) toast('ذخیره شد ✓');
+
+  const ok = await saveTopicRow(t);
+  renderBrainstorm();   // پیش‌نمایش کارت هم به‌روز شود
+  if (!silent) toast(ok ? 'ذخیره شد ✓' : 'ذخیره نشد — اتصال را چک کن');
+  return ok;
 }
+
 function scheduleBrainstormSave() {
   clearTimeout(brainstormTimer);
   $('#brainstormSaveInd').textContent = 'در حال ذخیره...';
-  brainstormTimer = setTimeout(() => {
-    saveBrainstormContent(true);
+  brainstormTimer = setTimeout(async () => {
+    await saveBrainstormContent(true);
     $('#brainstormSaveInd').textContent = 'ذخیره شد ✓';
     setTimeout(() => {
       if ($('#brainstormSaveInd').textContent === 'ذخیره شد ✓') $('#brainstormSaveInd').textContent = '';
     }, 2000);
   }, 1500);
 }
+
 function downloadTopic() {
   if (!currentTopicId) return;
   const t = state.brainstorm.find((x) => x.id === currentTopicId);
@@ -794,7 +1636,7 @@ function downloadTopic() {
 }
 
 /* ============================================================
-   ۱۳) باشگاه
+   ۱۶) باشگاه
    ============================================================ */
 function gymExercisesTotal(exercises) {
   return (exercises || []).reduce((sum, e) => sum + (Number(e.sets) || 0) * (Number(e.reps) || 0), 0);
@@ -921,7 +1763,8 @@ function closeGymModal() {
   $('#gymModal').classList.remove('open');
   editingGymId = null;
 }
-function saveGymFromModal() {
+
+async function saveGymFromModal() {
   const name = $('#gymName').value.trim();
   if (!name) { toast('اسم جلسه رو بنویس'); return; }
   const date = $('#gymDate').value || todayISO();
@@ -944,28 +1787,41 @@ function saveGymFromModal() {
     });
   });
 
+  let session;
   if (editingGymId) {
-    const g = state.gym.find((x) => x.id === editingGymId);
-    if (g) Object.assign(g, { name, date, duration, quality, energy, note, exercises });
+    session = state.gym.find((x) => x.id === editingGymId);
+    if (!session) return;
+    Object.assign(session, { name, date, duration, quality, energy, note, exercises });
   } else {
-    state.gym.push({ id: uid(), name, date, duration, quality, energy, note, exercises, createdAt: Date.now() });
+    session = { id: uid(), name, date, duration, quality, energy, note, exercises, createdAt: Date.now() };
+    state.gym.push(session);
   }
 
-  save('gym');
+  const ok = await saveGymRow(session);
   closeGymModal();
   renderGym();
-  toast('ذخیره شد ✓');
+  renderReviewIfVisible();
+  toast(ok ? 'ذخیره شد ✓' : 'ذخیره نشد — اتصال را چک کن');
 }
-function deleteGym(id) {
+
+async function deleteGym(id) {
   if (!confirm('این جلسه حذف بشه؟')) return;
   state.gym = state.gym.filter((g) => g.id !== id);
-  save('gym');
   renderGym();
+  renderReviewIfVisible();
+  await deleteGymRow(id);
+  renderGym();
+  renderReviewIfVisible();
   toast('حذف شد');
 }
 
+/* اگر تب «بررسی عملکرد» باز است، بعد از تغییر جلسات آن را هم تازه کن */
+function renderReviewIfVisible() {
+  if ($('#reviewTab') && $('#reviewTab').classList.contains('active')) renderReview();
+}
+
 /* ============================================================
-   ۱۴) برنامه ورزشی
+   ۱۷) برنامه ورزشی
    ============================================================ */
 function renderPlan() {
   // تب فعال رو نگه دار
@@ -1012,16 +1868,18 @@ function renderPlan() {
   if (activeTab === 'review') renderReview();
 }
 
-function setSessionsPerWeek(n) {
+async function setSessionsPerWeek(n) {
   state.plan.sessionsPerWeek = n;
-  save('plan');
+  renderPlan();
+  await savePlan();
   renderPlan();
 }
 
-function togglePlanDayRest(dayIdx) {
+async function togglePlanDayRest(dayIdx) {
   const d = state.plan.days[dayIdx];
   d.rest = !d.rest;
-  save('plan');
+  renderPlan();
+  await savePlan();
   renderPlan();
 }
 
@@ -1045,7 +1903,8 @@ function closePlanExerciseModal() {
   currentPlanDay = null;
   currentPlanExIdx = null;
 }
-function savePlanExercise() {
+
+async function savePlanExercise() {
   const name = $('#peName').value.trim();
   if (!name) { toast('نام حرکت رو بنویس'); return; }
   const muscle = $('#peMuscle').value;
@@ -1059,15 +1918,19 @@ function savePlanExercise() {
     d.exercises.push({ name, muscle, sets, reps });
   }
   d.rest = false;
-  save('plan');
+
   closePlanExerciseModal();
   renderPlan();
-  toast('ذخیره شد ✓');
+  const ok = await savePlan();
+  renderPlan();
+  toast(ok ? 'ذخیره شد ✓' : 'ذخیره نشد — اتصال را چک کن');
 }
-function deletePlanExercise(dayIdx, idx) {
+
+async function deletePlanExercise(dayIdx, idx) {
   if (!confirm('این حرکت از برنامه حذف بشه؟')) return;
   state.plan.days[dayIdx].exercises.splice(idx, 1);
-  save('plan');
+  renderPlan();
+  await savePlan();
   renderPlan();
 }
 
@@ -1229,7 +2092,7 @@ function switchPlanTab(tab) {
 }
 
 /* ============================================================
-   ۱۵) آمار
+   ۱۸) آمار
    ============================================================ */
 function overallStats() {
   const dates = Object.keys(state.logs).sort();
@@ -1329,7 +2192,7 @@ function renderStats() {
 }
 
 /* ============================================================
-   ۱۶) ناوبری
+   ۱۹) ناوبری
    ============================================================ */
 function showPage(page) {
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
@@ -1351,8 +2214,17 @@ function showPage(page) {
   if (page === 'settings')   renderSettings();
 }
 
+/* صفحه‌ی فعال فعلی را دوباره بساز (بعد از بارگذاری داده‌ها) */
+function renderAll() {
+  const active = $('.page.active');
+  const page = (active && active.id && active.id.indexOf('page-') === 0)
+    ? active.id.slice(5)
+    : 'dashboard';
+  showPage(page);
+}
+
 /* ============================================================
-   ۱۷) خروجی / ورودی داده
+   ۲۰) خروجی / ورودی داده
    ============================================================ */
 function download(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -1391,12 +2263,15 @@ function exportJournal() {
   toast('ژورنال دانلود شد ✓');
 }
 
+/* وارد کردن فایل JSON: چون داده‌ها در ابر هستند،
+   بعد از جایگزینی state باید کل ابر را هم با همان محتوا بازنویسی کنیم. */
 function importAll(file) {
   const reader = new FileReader();
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     try {
       const data = JSON.parse(e.target.result);
-      if (!confirm('داده‌های فعلی با فایل جایگزین بشن؟')) return;
+      if (!confirm('داده‌های فعلی (هم روی ابر) با فایل جایگزین بشن؟')) return;
+
       if (data.habits)     state.habits     = data.habits;
       if (data.logs)       state.logs       = data.logs;
       if (data.journal)    state.journal    = data.journal;
@@ -1407,20 +2282,109 @@ function importAll(file) {
       if (data.gym)        state.gym        = data.gym;
       if (data.plan)       state.plan       = data.plan;
       ensurePlanDefaults();
-      ['habits','logs','journal','weekly','settings','advice','brainstorm','gym','plan'].forEach(save);
+
+      await replaceCloudData();
+
       applySettings();
       renderTopbar();
       showPage('dashboard');
       toast('داده‌ها وارد شدند ✓');
-    } catch { toast('فایل معتبر نیست ✗'); }
+    } catch (err) {
+      console.error(err);
+      toast('فایل معتبر نیست ✗');
+    }
   };
   reader.readAsText(file);
 }
 
-function clearAll() {
+/* همه‌ی ردیف‌های کاربر را پاک و دوباره از state می‌نویسد (برای Import) */
+async function replaceCloudData() {
+  if (!currentUser) return;
+  setSync('busy', '☁️ جایگزینی داده‌ها…');
+
+  const del = await Promise.all([
+    db.from('habits').delete().eq('user_id', currentUser.id),
+    db.from('logs').delete().eq('user_id', currentUser.id),
+    db.from('journal_entries').delete().eq('user_id', currentUser.id),
+    db.from('advice').delete().eq('user_id', currentUser.id),
+    db.from('brainstorm_topics').delete().eq('user_id', currentUser.id),
+    db.from('gym_sessions').delete().eq('user_id', currentUser.id)
+  ]);
+  const delErr = del.find((r) => r.error);
+  if (delErr) throw delErr.error;
+
+  await Promise.all([
+    uploadHabits(state.habits),
+    uploadLogs(state.logs),
+    uploadJournal(state.journal),
+    uploadAdvice(state.advice),
+    uploadTopics(state.brainstorm),
+    uploadGym(state.gym),
+    savePlan(),
+    saveSettings()
+  ]);
+}
+
+/* ---------- کمک‌تابع‌های آپلود دسته‌ای ---------- */
+function uploadHabits(habits) {
+  if (!habits.length) return Promise.resolve(true);
+  return withSync(() => db.from('habits')
+    .upsert(habits.map((h, i) => habitToRow(h, i)), { onConflict: 'user_id,id' }));
+}
+
+function uploadLogs(logs) {
+  const rows = [];
+  Object.entries(logs || {}).forEach(([iso, day]) => {
+    Object.entries(day || {}).forEach(([habitId, done]) => {
+      if (!done) return;
+      rows.push({ user_id: currentUser.id, habit_id: habitId, log_date: iso, done: true });
+    });
+  });
+  if (!rows.length) return Promise.resolve(true);
+  return withSync(() => db.from('logs').upsert(rows, { onConflict: 'user_id,habit_id,log_date' }));
+}
+
+function uploadJournal(items) {
+  if (!items.length) return Promise.resolve(true);
+  return withSync(() => db.from('journal_entries')
+    .upsert(items.map(journalToRow), { onConflict: 'user_id,id' }));
+}
+
+function uploadAdvice(items) {
+  if (!items.length) return Promise.resolve(true);
+  return withSync(() => db.from('advice')
+    .upsert(items.map(adviceToRow), { onConflict: 'user_id,id' }));
+}
+
+function uploadTopics(items) {
+  if (!items.length) return Promise.resolve(true);
+  return withSync(() => db.from('brainstorm_topics')
+    .upsert(items.map(topicToRow), { onConflict: 'user_id,id' }));
+}
+
+function uploadGym(items) {
+  if (!items.length) return Promise.resolve(true);
+  return withSync(() => db.from('gym_sessions')
+    .upsert(items.map(gymToRow), { onConflict: 'user_id,id' }));
+}
+
+async function clearAll() {
+  if (!appReady) return;
   if (!confirm('همه داده‌ها (عادت‌ها، تیک‌ها، ژورنال، توصیه‌ها، برین‌استورم، باشگاه، برنامه) پاک بشن؟')) return;
   if (!confirm('مطمئنی؟ این کار برگشت‌پذیر نیست!')) return;
-  Object.values(STORAGE).forEach((k) => localStorage.removeItem(k));
+
+  setSync('busy', '☁️ پاک‌سازی ابر…');
+  const res = await Promise.all([
+    db.from('habits').delete().eq('user_id', currentUser.id),
+    db.from('logs').delete().eq('user_id', currentUser.id),
+    db.from('journal_entries').delete().eq('user_id', currentUser.id),
+    db.from('advice').delete().eq('user_id', currentUser.id),
+    db.from('brainstorm_topics').delete().eq('user_id', currentUser.id),
+    db.from('gym_sessions').delete().eq('user_id', currentUser.id)
+  ]);
+  const bad = res.find((r) => r.error);
+  if (bad) { toast('پاک‌سازی کامل نشد: ' + bad.error.message); setSync('err', '⚠️ خطا'); return; }
+
   state = {
     habits: defaultHabits(), logs: {}, journal: [],
     settings: { name: '', palette: 'green', theme: 'light', reminder: '08:00' },
@@ -1428,7 +2392,9 @@ function clearAll() {
     plan: { sessionsPerWeek: 3, days: {} }
   };
   ensurePlanDefaults();
-  ['habits','logs','journal','weekly','settings','advice','brainstorm','gym','plan'].forEach(save);
+
+  await Promise.all([saveHabitOrder(), savePlan(), saveSettings()]);
+
   applySettings();
   renderTopbar();
   showPage('dashboard');
@@ -1436,7 +2402,236 @@ function clearAll() {
 }
 
 /* ============================================================
-   ۱۸) مودال عادت
+   ۲۱) انتقال یک‌باره‌ی داده‌های LocalStorage به Supabase
+   ------------------------------------------------------------
+   این همان چیزی است که ژورنال و عادت‌های قدیمی را حفظ می‌کند.
+   ورودی‌ها را فقط «اضافه» می‌کند (upsert) و هیچ‌چیز را پاک نمی‌کند.
+   ============================================================ */
+function readLegacyData() {
+  try {
+    const read = (key) => JSON.parse(localStorage.getItem(STORAGE[key]) || 'null');
+    return {
+      habits:     read('habits')     || [],
+      logs:       read('logs')       || {},
+      journal:    read('journal')    || [],
+      weekly:     read('weekly')     || {},
+      advice:     read('advice')     || [],
+      brainstorm: read('brainstorm') || [],
+      gym:        read('gym')        || [],
+      plan:       read('plan')       || null,
+      settings:   read('settings')   || null
+    };
+  } catch (err) {
+    console.error('خواندن LocalStorage ممکن نشد:', err);
+    return null;
+  }
+}
+
+function legacyHasData(s) {
+  if (!s) return false;
+  return Boolean(
+    (s.habits && s.habits.length) ||
+    (s.journal && s.journal.length) ||
+    Object.keys(s.logs || {}).length ||
+    (s.advice && s.advice.length) ||
+    (s.brainstorm && s.brainstorm.length) ||
+    (s.gym && s.gym.length) ||
+    (s.settings && s.settings.name)
+  );
+}
+
+/* انتقال داده‌ها. اگر ask=true باشد، اول تأیید می‌گیرد. */
+async function migrateLegacyData(ask = true) {
+  if (!appReady) { toast('اول وارد حساب شو'); return; }
+
+  const snap = readLegacyData();
+  if (!legacyHasData(snap)) {
+    setMigrateStatus('داده‌ای در LocalStorage این دستگاه پیدا نشد.');
+    toast('داده محلی پیدا نشد');
+    return;
+  }
+
+  const summary =
+    `${snap.habits.length} عادت، ${Object.keys(snap.logs || {}).length} روز تیک، ` +
+    `${snap.journal.length} ورودی ژورنال، ${snap.advice.length} توصیه، ` +
+    `${snap.brainstorm.length} موضوع، ${snap.gym.length} جلسه باشگاه`;
+
+  if (ask && !confirm(
+    `داده‌های قبلی این دستگاه پیدا شد:\n${summary}\n\n` +
+    `به حساب ابری منتقل بشن؟\n(فقط اضافه می‌شوند؛ چیزی پاک نمی‌شود)`)) return;
+
+  setMigrateStatus('در حال انتقال…');
+  setSync('busy', '☁️ انتقال داده‌ها…');
+
+  const u = currentUser.id;
+
+  /* --- عادت‌ها --- */
+  const habitIds = new Set(snap.habits.map((h) => h.id));
+  const habitRows = snap.habits.map((h, i) => ({
+    user_id: u,
+    id: h.id,
+    title: h.title || 'بدون عنوان',
+    icon: h.icon || '⭐',
+    color: h.color || '#10b981',
+    days: Array.isArray(h.days) ? h.days : [],
+    sort_order: Number.isFinite(h.order) ? h.order : i
+  }));
+
+  /* --- تیک‌ها: از آبجکت تودرتو به ردیف‌های logs --- */
+  const logRows = [];
+  Object.entries(snap.logs || {}).forEach(([iso, day]) => {
+    Object.entries(day || {}).forEach(([habitId, done]) => {
+      if (!done) return;
+      /* اگر عادت مربوطه در LocalStorage نبود، تیکش را منتقل نکن */
+      if (!habitIds.has(habitId)) return;
+      logRows.push({ user_id: u, habit_id: habitId, log_date: iso, done: true });
+    });
+  });
+
+  /* --- ژورنال --- */
+  const journalRows = snap.journal.map((e) => ({
+    user_id: u,
+    id: e.id,
+    title: e.title || '',
+    entry_date: e.date || todayISO(),
+    mood: Number(e.mood) || 3,
+    tags: Array.isArray(e.tags) ? e.tags : [],
+    good: e.good || '',
+    learned: e.learned || '',
+    feeling: e.feeling || '',
+    tomorrow: e.tomorrow || '',
+    created_at: new Date(e.createdAt || Date.now()).toISOString()
+  }));
+
+  /* --- توصیه‌ها --- */
+  const adviceRows = snap.advice.map((a) => ({
+    user_id: u,
+    id: a.id,
+    body: a.text || '',
+    color: a.color || '#fef3c7',
+    pinned: !!a.pinned,
+    created_at: new Date(a.createdAt || Date.now()).toISOString()
+  }));
+
+  /* --- برین‌استورم --- */
+  const topicRows = snap.brainstorm.map((t) => ({
+    user_id: u,
+    id: t.id,
+    title: t.title || 'بدون عنوان',
+    icon: t.icon || '🧠',
+    color: t.color || '#fef3c7',
+    content: t.content || '',
+    created_at: new Date(t.createdAt || Date.now()).toISOString(),
+    updated_at: new Date(t.updatedAt || Date.now()).toISOString()
+  }));
+
+  /* --- باشگاه --- */
+  const gymRows = snap.gym.map((g) => ({
+    user_id: u,
+    id: g.id,
+    name: g.name || 'جلسه',
+    session_date: g.date || todayISO(),
+    duration: Number(g.duration) || 0,
+    quality: Number(g.quality) || 3,
+    energy: Number(g.energy) || 3,
+    note: g.note || '',
+    exercises: Array.isArray(g.exercises) ? g.exercises : [],
+    created_at: new Date(g.createdAt || Date.now()).toISOString()
+  }));
+
+  try {
+    /* عادت‌ها اول، تا تیک‌ها به شناسه‌ی موجود اشاره کنند */
+    if (habitRows.length) {
+      const r = await db.from('habits').upsert(habitRows, { onConflict: 'user_id,id' });
+      if (r.error) throw r.error;
+    }
+    if (logRows.length) {
+      const r = await db.from('logs').upsert(logRows, { onConflict: 'user_id,habit_id,log_date' });
+      if (r.error) throw r.error;
+    }
+    if (journalRows.length) {
+      const r = await db.from('journal_entries').upsert(journalRows, { onConflict: 'user_id,id' });
+      if (r.error) throw r.error;
+    }
+    if (adviceRows.length) {
+      const r = await db.from('advice').upsert(adviceRows, { onConflict: 'user_id,id' });
+      if (r.error) throw r.error;
+    }
+    if (topicRows.length) {
+      const r = await db.from('brainstorm_topics').upsert(topicRows, { onConflict: 'user_id,id' });
+      if (r.error) throw r.error;
+    }
+    if (gymRows.length) {
+      const r = await db.from('gym_sessions').upsert(gymRows, { onConflict: 'user_id,id' });
+      if (r.error) throw r.error;
+    }
+
+    /* --- برنامه ورزشی --- */
+    if (snap.plan && typeof snap.plan === 'object') {
+      const r = await db.from('workout_plans')
+        .upsert({ user_id: u, plan: snap.plan, updated_at: new Date().toISOString() },
+                { onConflict: 'user_id' });
+      if (r.error) throw r.error;
+    }
+
+    /* --- تنظیمات: اسم و یادداشت‌های هفتگی را با ابر ترکیب کن ---
+       (اسم فعلی ابر را با اسم قدیمی بازنویسی نمی‌کنیم مگر خالی باشد) */
+    const mergedWeekly = Object.assign({}, snap.weekly || {}, state.weekly || {});
+    const mergedName = state.settings.name || (snap.settings && snap.settings.name) || '';
+    const r2 = await db.from('user_settings').upsert({
+      user_id: u,
+      name: mergedName,
+      palette: state.settings.palette || 'green',
+      theme: state.settings.theme || 'light',
+      reminder: (snap.settings && snap.settings.reminder) || state.settings.reminder || '08:00',
+      weekly: mergedWeekly,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'user_id' });
+    if (r2.error) throw r2.error;
+
+    /* علامت بزن که دیگر پیشنهاد انتقال ندهیم */
+    localStorage.setItem(MIGRATED_FLAG, new Date().toISOString());
+
+    /* داده‌ها را از ابر دوباره بخوان تا UI دقیقاً همان چیزی باشد که ذخیره شد */
+    await load();
+    applySettings();
+    renderTopbar();
+    renderAll();
+
+    setMigrateStatus(`✅ انتقال انجام شد — ${new Date().toLocaleString('fa-IR')}`);
+    toast('داده‌های قبلی به ابر منتقل شد ✓');
+  } catch (err) {
+    console.error('انتقال داده‌ها ناموفق:', err);
+    setSync('err', '⚠️ انتقال نیمه‌کاره ماند');
+    setMigrateStatus('❌ انتقال کامل نشد: ' + (err.message || err));
+    toast('انتقال کامل نشد؛ دوباره تلاش کن');
+  }
+}
+
+function setMigrateStatus(text) {
+  const el = $('#migrateStatus');
+  if (el) el.textContent = text || '';
+}
+
+/* اگر ابر خالی است و داده‌ی محلی وجود دارد، یک‌بار خودکار پیشنهاد بده */
+function maybeOfferMigration() {
+  if (migrationAsked) return;
+  if (localStorage.getItem(MIGRATED_FLAG)) return;
+  if (!legacyHasData(readLegacyData())) return;
+
+  const cloudEmpty = state.habits.length === 0 && state.journal.length === 0 &&
+                     state.advice.length === 0 && state.gym.length === 0;
+  if (!cloudEmpty) {
+    /* ابر داده دارد: فقط در تنظیمات قابل دسترسی است */
+    setMigrateStatus('داده‌های قدیمی این دستگاه هنوز منتقل نشده‌اند.');
+    return;
+  }
+  migrationAsked = true;
+  setTimeout(() => { migrateLegacyData(true); }, 900);
+}
+
+/* ============================================================
+   ۲۲) مودال عادت
    ============================================================ */
 function openHabitModal(id) {
   editingHabitId = id || null;
@@ -1455,38 +2650,56 @@ function closeHabitModal() {
   $('#habitModal').classList.remove('open');
   editingHabitId = null;
 }
-function saveHabitFromModal() {
+
+async function saveHabitFromModal() {
   const title = $('#hTitle').value.trim();
   if (!title) { toast('عنوان عادت رو بنویس'); $('#hTitle').focus(); return; }
   const icon  = $('#hIcon').value.trim() || '⭐';
   const color = $('#hColor').value;
   const days  = $$('#habitDays button.sel').map((b) => Number(b.dataset.day));
+
+  let habit;
   if (editingHabitId) {
-    const hb = state.habits.find((h) => h.id === editingHabitId);
-    if (hb) Object.assign(hb, { title, icon, color, days });
+    habit = state.habits.find((h) => h.id === editingHabitId);
+    if (!habit) return;
+    Object.assign(habit, { title, icon, color, days });
   } else {
-    state.habits.push({ id: uid(), title, icon, color, days, order: state.habits.length });
+    habit = { id: uid(), title, icon, color, days, order: state.habits.length };
+    state.habits.push(habit);
   }
-  save('habits');
+
+  const ok = await saveHabit(habit);
   closeHabitModal();
   renderTasks();
   renderDashboard();
-  toast('ذخیره شد ✓');
+  toast(ok ? 'ذخیره شد ✓' : 'ذخیره نشد — اتصال را چک کن');
 }
 
 /* ============================================================
-   ۱۹) بایند کردن رویدادها
+   ۲۳) بایند کردن رویدادها
    ============================================================ */
+function bindAuthEvents() {
+  $('#authForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendMagicLink();
+  });
+  $('#authVerifyBtn').addEventListener('click', verifyAuthCode);
+  $('#authCode').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); verifyAuthCode(); }
+  });
+  $('#authRetryBtn').addEventListener('click', () => window.location.reload());
+}
+
 function bindEvents() {
   /* --- ناوبری --- */
   $$('.nav-item').forEach((btn) =>
     btn.addEventListener('click', () => showPage(btn.dataset.page)));
 
-  /* --- تم --- */
+  /* --- تم (در ابر هم ذخیره می‌شود) --- */
   $('#themeToggle').addEventListener('click', () => {
     state.settings.theme = state.settings.theme === 'dark' ? 'light' : 'dark';
-    save('settings');
     applySettings();
+    saveSettings();
   });
 
   /* --- داشبورد --- */
@@ -1511,11 +2724,11 @@ function bindEvents() {
     const id = row.dataset.id;
     const act = e.target.closest('button')?.dataset.act;
     if (!act) return;
-    if (act === 'toggle') { toggleHabit(id, todayISO()); renderTasks(); renderDashboard(); }
-    else if (act === 'up')   moveHabit(id, -1);
-    else if (act === 'down') moveHabit(id, 1);
-    else if (act === 'edit') openHabitModal(id);
-    else if (act === 'del')  deleteHabit(id);
+    if (act === 'toggle')      toggleHabit(id, todayISO());   // async — خودش render می‌کند
+    else if (act === 'up')     moveHabit(id, -1);
+    else if (act === 'down')   moveHabit(id, 1);
+    else if (act === 'edit')   openHabitModal(id);
+    else if (act === 'del')    deleteHabit(id);
   });
 
   /* --- ژورنال --- */
@@ -1656,17 +2869,17 @@ function bindEvents() {
     if (e.target.id === 'planExerciseModal') closePlanExerciseModal();
   });
 
-  /* --- آمار: یادداشت هفتگی --- */
+  /* --- آمار: یادداشت هفتگی (در user_settings.weekly ذخیره می‌شود) --- */
   $('#weeklyNote').addEventListener('input', () => {
     clearTimeout(weeklyTimer);
     $('#weeklySaved').textContent = '...';
-    weeklyTimer = setTimeout(() => {
+    weeklyTimer = setTimeout(async () => {
       const wk = weekKey();
       const v = $('#weeklyNote').value.trim();
       if (v) state.weekly[wk] = v;
       else delete state.weekly[wk];
-      save('weekly');
-      $('#weeklySaved').textContent = 'ذخیره شد ✓';
+      const ok = await saveSettings();
+      $('#weeklySaved').textContent = ok ? 'ذخیره شد ✓' : 'ذخیره نشد ✗';
       setTimeout(() => { $('#weeklySaved').textContent = ''; }, 2000);
     }, 800);
   });
@@ -1674,20 +2887,20 @@ function bindEvents() {
   /* --- تنظیمات --- */
   $('#setName').addEventListener('input', (e) => {
     state.settings.name = e.target.value.trim();
-    save('settings');
     applySettings();
+    queueSaveSettings();     // با تاخیر کوتاه تا برای هر حرف یک درخواست نرود
   });
   $('#setReminder').addEventListener('change', (e) => {
     state.settings.reminder = e.target.value;
-    save('settings');
+    saveSettings();
   });
   $('#paletteRow').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-palette]');
     if (!btn) return;
     state.settings.palette = btn.dataset.palette;
-    save('settings');
     applySettings();
     renderSettings();
+    saveSettings();
   });
   $('#exportAllBtn').addEventListener('click', exportAll);
   $('#importFile').addEventListener('change', (e) => {
@@ -1696,6 +2909,10 @@ function bindEvents() {
     e.target.value = '';
   });
   $('#clearAllBtn').addEventListener('click', clearAll);
+
+  /* --- حساب کاربری --- */
+  $('#logoutBtn').addEventListener('click', logout);
+  $('#migrateBtn').addEventListener('click', () => migrateLegacyData(true));
 
   /* --- کلید Escape --- */
   document.addEventListener('keydown', (e) => {
@@ -1711,14 +2928,15 @@ function bindEvents() {
 }
 
 /* ============================================================
-   ۲۰) اجرا
+   ۲۴) اجرا
    ============================================================ */
 function init() {
-  load();
-  applySettings();
-  renderTopbar();
+  applyAuthTheme();   // تم صفحه ورود از تنظیمات محلی (اگر بود)
+  bindAuthEvents();
   bindEvents();
-  showPage('dashboard');
+  renderTopbar();
+  showAuthScreen();
+  startAuth();        // اگر نشست ذخیره‌شده باشد، خودکار وارد می‌شود
 }
 
 document.addEventListener('DOMContentLoaded', init);
